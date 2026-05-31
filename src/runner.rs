@@ -25,6 +25,7 @@ const CQLITE_VERSION: &str = "v0.9.2";
 /// Run one workload through the full trial protocol and produce a `RunResult`.
 pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
     let mut trial_ops_per_sec: Vec<f64> = Vec::with_capacity(ctx.trials as usize);
+    let mut trial_rows_per_sec: Vec<f64> = Vec::with_capacity(ctx.trials as usize);
     let mut merged = LatencyRecorder::new();
     let mut total_rows: u64 = 0;
     let mut peak_rss: u64 = 0;
@@ -58,7 +59,9 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
         let _ = sampler.await;
 
         let ops_per_sec = ops as f64 / elapsed.as_secs_f64();
+        let rows_per_sec = rows as f64 / elapsed.as_secs_f64();
         trial_ops_per_sec.push(ops_per_sec);
+        trial_rows_per_sec.push(rows_per_sec);
         merged.merge(&rec);
         total_rows += rows;
         peak_rss = peak_rss.max(peak.load(Ordering::Relaxed));
@@ -83,6 +86,7 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
     }
 
     let median_ops = median(&trial_ops_per_sec);
+    let median_rows = median(&trial_rows_per_sec);
     let cv = coefficient_of_variation(&trial_ops_per_sec);
     let cpu_mean = if cpu_means.is_empty() {
         0.0
@@ -107,9 +111,9 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
         cache: if ctx.cold_cache { "cold" } else { "warm" }.to_string(),
         throughput: Throughput {
             ops_per_sec: median_ops,
-            // For write.ingest one op == one row. Scan workloads override this
-            // accounting in M1.
-            rows_per_sec: median_ops,
+            // Rows touched per second, measured directly from each op's returned
+            // row count — distinct from ops/sec for scans (many rows per op).
+            rows_per_sec: median_rows,
             mb_per_sec: None,
         },
         latency_us: merged.snapshot(),

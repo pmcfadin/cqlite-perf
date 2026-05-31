@@ -126,8 +126,8 @@ SHA="$(
 	find "$OUT_DIR" -name '*-Data.db' -print0 | sort -z |
 		xargs -0 cat | shasum -a 256 | awk '{print $1}'
 )"
-BYTES="$(find "$OUT_DIR" -type f -printf '%s\n' 2>/dev/null | awk '{s+=$1} END{print s+0}')"
-[[ -z "$BYTES" || "$BYTES" == "0" ]] && BYTES="$(du -sk "$OUT_DIR" | awk '{print $1*1024}')"
+# Portable byte count (macOS `find` lacks -printf): du -sk gives KiB blocks.
+BYTES="$(du -sk "$OUT_DIR" | awk '{print $1*1024}')"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 mkdir -p "$(dirname "$MANIFEST")"

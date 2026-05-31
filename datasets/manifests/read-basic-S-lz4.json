@@ -1,0 +1,14 @@
+{
+  "id": "read-basic-S-lz4",
+  "tier": "S",
+  "schema": "basic",
+  "codec": "lz4",
+  "rows": 100000,
+  "bytes": 5971968,
+  "generator": "cassandra-5.0",
+  "generator_version": "5.0.0",
+  "cqlite_schema_ref": "schemas/basic.cql",
+  "sha256": "5426c8bb510c018cb8e2a5808e36bed5c1d2b5ffb3f0c18dd8f634c3836470b9",
+  "created_utc": "2026-05-31T02:36:54Z",
+  "path_hint": "datasets/read-basic-S-lz4/"
+}
