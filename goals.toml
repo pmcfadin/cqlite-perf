@@ -1,0 +1,51 @@
+# goals.toml — declared performance targets for cqlite (PRD addendum US-2).
+#
+# A goal MATCHES a result when every selector field present here equals the
+# result's value (omitted selector = matches any). It is MET when
+# "<metric> <op> <target>" holds. A goal with `regression_max_pct` instead
+# judges against a baseline result rather than an absolute target.
+#
+# Targets below are SEEDED PLACEHOLDERS. The cqlite dev team owns calibrating
+# them — writing down the number is the US-2 deliverable. `enforce = true`
+# means CI gates on the goal (SPEC §14).
+
+[[goal]]
+name     = "basic scan decode throughput (S tier)"
+metric   = "throughput.rows_per_sec"
+op       = ">="
+target   = 1000000                # 1M rows/sec — PLACEHOLDER, calibrate
+workload = "read.full_scan"
+schema   = "basic"
+tier     = "S"
+enforce  = false
+
+[[goal]]
+name     = "point lookup p99 latency"
+metric   = "latency_us.p99"
+op       = "<="
+target   = 500                    # 500 µs — PLACEHOLDER, calibrate
+workload = "read.point_lookup"
+enforce  = false
+
+[[goal]]
+name     = "streaming scan stays memory-bounded"
+metric   = "resource.peak_rss_bytes"
+op       = "<="
+target   = 134217728              # 128 MB (SPEC §7)
+workload = "read.full_scan"
+enforce  = false                  # observed 274 MB — track, don't gate yet
+
+[[goal]]
+name     = "write ingest throughput (WAL-on)"
+metric   = "throughput.ops_per_sec"
+op       = ">="
+target   = 250                    # PLACEHOLDER, calibrate
+workload = "write.ingest"
+enforce  = false
+
+[[goal]]
+name               = "scan throughput regression budget"
+metric             = "throughput.rows_per_sec"
+regression_max_pct = 10.0         # fail if >10% worse than baseline
+workload           = "read.full_scan"
+enforce            = false

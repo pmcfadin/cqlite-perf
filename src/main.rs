@@ -11,6 +11,7 @@ mod distribution;
 mod metrics;
 mod report;
 mod runner;
+mod scorecard;
 mod workloads;
 
 use std::path::PathBuf;
@@ -36,6 +37,27 @@ enum Command {
     Gen(GenArgs),
     /// List/validate cached datasets against their manifests (SPEC §12).
     Datasets(DatasetsArgs),
+    /// Judge results against goals.toml and emit SCORECARD.md (PRD addendum US-2).
+    Scorecard(ScorecardArgs),
+}
+
+#[derive(Parser)]
+struct ScorecardArgs {
+    /// results.jsonl to judge (the current run).
+    #[arg(long)]
+    results: PathBuf,
+    /// Declared goals file.
+    #[arg(long, default_value = "goals.toml")]
+    goals: PathBuf,
+    /// Optional baseline results.jsonl for regression flagging.
+    #[arg(long)]
+    baseline: Option<PathBuf>,
+    /// Where to write SCORECARD.md (defaults next to --results).
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Exit non-zero if any enforced goal fails (for CI gating).
+    #[arg(long, default_value_t = false)]
+    enforce: bool,
 }
 
 #[derive(Parser)]
@@ -112,7 +134,39 @@ async fn main() -> anyhow::Result<()> {
         Command::Run(args) => run(args).await,
         Command::Gen(args) => gen(args),
         Command::Datasets(args) => datasets_cmd(args),
+        Command::Scorecard(args) => scorecard_cmd(args),
     }
+}
+
+/// Judge a results.jsonl against goals.toml and emit SCORECARD.md (US-2).
+fn scorecard_cmd(args: ScorecardArgs) -> anyhow::Result<()> {
+    let goals = scorecard::load_goals(&args.goals)?;
+    let results = scorecard::load_results(&args.results)?;
+    let baseline = match &args.baseline {
+        Some(p) => scorecard::load_results(p)?,
+        None => Vec::new(),
+    };
+
+    let judgements = scorecard::judge(&goals, &results, &baseline);
+    let md = scorecard::render(&judgements, &results, &baseline);
+
+    let out = args
+        .out
+        .unwrap_or_else(|| {
+            args.results
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("SCORECARD.md")
+        });
+    std::fs::write(&out, &md)?;
+    println!("✓ scorecard written to {}", out.display());
+    print!("{md}");
+
+    let (_, enforced_failed) = scorecard::tally(&judgements);
+    if args.enforce && enforced_failed > 0 {
+        anyhow::bail!("{enforced_failed} enforced goal(s) failed");
+    }
+    Ok(())
 }
 
 /// Generate a dataset by shelling out to the generator script (SPEC §8.1).
@@ -296,6 +350,27 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     report.write_summary(&all_results)?;
     println!("\n✓ results written to {}", report.jsonl_path().display());
     println!("✓ summary written to {}", report.dir().join("SUMMARY.md").display());
+
+    // Auto-emit the goals scorecard when goals.toml is present, so the
+    // dev-team-facing report (US-2) is produced alongside the user-facing
+    // SUMMARY without a separate command. Non-fatal if goals.toml is absent.
+    let goals_path = std::path::Path::new("goals.toml");
+    if goals_path.exists() && !all_results.is_empty() {
+        match scorecard::load_goals(goals_path) {
+            Ok(goals) => {
+                let judgements = scorecard::judge(&goals, &all_results, &[]);
+                let md = scorecard::render(&judgements, &all_results, &[]);
+                let sc = report.dir().join("SCORECARD.md");
+                std::fs::write(&sc, md)?;
+                let (_, enforced_failed) = scorecard::tally(&judgements);
+                println!("✓ scorecard written to {}", sc.display());
+                if enforced_failed > 0 {
+                    println!("  ⚠ {enforced_failed} enforced goal(s) failed");
+                }
+            }
+            Err(e) => eprintln!("warning: could not load goals.toml: {e}"),
+        }
+    }
     Ok(())
 }
 
