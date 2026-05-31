@@ -180,36 +180,55 @@ fn datasets_cmd(args: DatasetsArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The fully-resolved run matrix, from either a config file or ad-hoc flags.
+struct RunPlan {
+    workloads: Vec<String>,
+    concurrency: Vec<usize>,
+    tiers: Vec<String>,
+    codecs: Vec<String>,
+    distributions: Vec<String>,
+    warmup_secs: u64,
+    duration_secs: u64,
+    trials: u32,
+    cold_cache: bool,
+    seed: u64,
+}
+
 async fn run(args: RunArgs) -> anyhow::Result<()> {
-    // Resolve the workload list and run parameters, either from a config file
-    // or from ad-hoc flags.
-    let (workloads, concurrency, warmup_secs, duration_secs, trials, cold_cache, seed) =
-        if let Some(ref path) = args.config {
-            let cfg = RunConfig::from_path(path)?;
-            (
-                cfg.workload_names(),
-                cfg.concurrency.clone(),
-                parse_secs(&cfg.warmup)?,
-                parse_secs(&cfg.duration)?,
-                cfg.trials,
-                cfg.cold_cache,
-                cfg.seed,
-            )
-        } else {
-            let wl = args
-                .workload
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("provide either --config or --workload"))?;
-            (
-                vec![wl],
-                parse_concurrency(&args.concurrency)?,
-                parse_secs(&args.warmup)?,
-                parse_secs(&args.duration)?,
-                args.trials,
-                args.cold_cache,
-                args.seed,
-            )
-        };
+    // Resolve the run matrix, either from a config file (full sweep over
+    // tiers × codecs × distributions) or from ad-hoc flags (single axis values).
+    let plan = if let Some(ref path) = args.config {
+        let cfg = RunConfig::from_path(path)?;
+        RunPlan {
+            workloads: cfg.workload_names(),
+            concurrency: cfg.concurrency.clone(),
+            tiers: cfg.tiers.clone(),
+            codecs: cfg.codecs.clone(),
+            distributions: cfg.distributions.clone(),
+            warmup_secs: parse_secs(&cfg.warmup)?,
+            duration_secs: parse_secs(&cfg.duration)?,
+            trials: cfg.trials,
+            cold_cache: cfg.cold_cache,
+            seed: cfg.seed,
+        }
+    } else {
+        let wl = args
+            .workload
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("provide either --config or --workload"))?;
+        RunPlan {
+            workloads: vec![wl],
+            concurrency: parse_concurrency(&args.concurrency)?,
+            tiers: vec![args.tier.clone()],
+            codecs: vec![args.codec.clone()],
+            distributions: vec![args.distribution.clone()],
+            warmup_secs: parse_secs(&args.warmup)?,
+            duration_secs: parse_secs(&args.duration)?,
+            trials: args.trials,
+            cold_cache: args.cold_cache,
+            seed: args.seed,
+        }
+    };
 
     let work_dir = std::env::temp_dir().join("cqlite-perf");
     std::fs::create_dir_all(&work_dir)?;
@@ -223,36 +242,60 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         report.jsonl_path().display()
     );
 
-    for name in &workloads {
-        for &conc in &concurrency {
-            let ctx = RunContext {
-                tier: args.tier.clone(),
-                schema: args.schema.clone(),
-                codec: args.codec.clone(),
-                distribution: args.distribution.clone(),
-                concurrency: conc,
-                warmup_secs,
-                duration_secs,
-                trials,
-                seed,
-                cold_cache,
-                work_dir: work_dir.clone(),
-            };
-            println!("\n▶ {name}  (concurrency={conc}, {duration_secs}s × {trials} trials)");
-            let result = runner::run(name, &ctx).await?;
-            report.append(&result)?;
-            println!(
-                "  → {:.0} ops/sec  p50={}µs p99={}µs p999={}µs  cv={:.3}",
-                result.throughput.ops_per_sec,
-                result.latency_us.p50,
-                result.latency_us.p99,
-                result.latency_us.p999,
-                result.variance.ops_per_sec_cv,
-            );
+    // Sweep the full matrix: workload × tier × codec × distribution × concurrency
+    // (SPEC §10 codec sweep, §6 distribution knob). Read workloads resolve their
+    // dataset per (tier, codec) via manifest query; a missing dataset is reported
+    // and skipped so one gap doesn't abort the whole sweep.
+    let mut all_results = Vec::new();
+    for name in &plan.workloads {
+        for tier in &plan.tiers {
+            for codec in &plan.codecs {
+                for distribution in &plan.distributions {
+                    for &conc in &plan.concurrency {
+                        let ctx = RunContext {
+                            tier: tier.clone(),
+                            schema: args.schema.clone(),
+                            codec: codec.clone(),
+                            distribution: distribution.clone(),
+                            concurrency: conc,
+                            warmup_secs: plan.warmup_secs,
+                            duration_secs: plan.duration_secs,
+                            trials: plan.trials,
+                            seed: plan.seed,
+                            cold_cache: plan.cold_cache,
+                            work_dir: work_dir.clone(),
+                        };
+                        println!(
+                            "\n▶ {name}  (tier={tier} codec={codec} dist={distribution} \
+                             conc={conc}, {}s × {} trials)",
+                            plan.duration_secs, plan.trials
+                        );
+                        match runner::run(name, &ctx).await {
+                            Ok(result) => {
+                                report.append(&result)?;
+                                all_results.push(result.clone());
+                                println!(
+                                    "  → {:.0} ops/sec  p50={}µs p99={}µs p999={}µs  cv={:.3}",
+                                    result.throughput.ops_per_sec,
+                                    result.latency_us.p50,
+                                    result.latency_us.p99,
+                                    result.latency_us.p999,
+                                    result.variance.ops_per_sec_cv,
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("  ! skipped: {e}");
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
+    report.write_summary(&all_results)?;
     println!("\n✓ results written to {}", report.jsonl_path().display());
+    println!("✓ summary written to {}", report.dir().join("SUMMARY.md").display());
     Ok(())
 }
 

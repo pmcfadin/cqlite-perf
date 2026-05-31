@@ -54,6 +54,9 @@ pub fn build(name: &str) -> anyhow::Result<Box<dyn Workload>> {
         // The table name is resolved from the schema at setup time; for M1 the
         // generated corpus uses a fixed table per schema (see cassandra_gen).
         "read.full_scan" => Ok(Box::new(read::ReadWorkload::full_scan("basic"))),
+        "read.point_lookup" => Ok(Box::new(read::ReadWorkload::point_lookup("basic", "id"))),
+        "read.type_heavy" => Ok(Box::new(read::ReadWorkload::type_heavy("collections"))),
+        "read.wide_partition" => Ok(Box::new(read::ReadWorkload::wide_partition("wide_rows"))),
         other => anyhow::bail!(
             "workload '{other}' is not implemented yet (M1 adds read.full_scan; \
              remaining read/mixed variants land incrementally)"

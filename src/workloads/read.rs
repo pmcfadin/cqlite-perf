@@ -6,6 +6,7 @@
 //! type-heavy variants are the same machinery with a different query and key
 //! selection; they land incrementally on top of this.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,16 +15,31 @@ use cqlite_core::query::result::StreamingConfig;
 use cqlite_core::{Config, Database};
 
 use super::{OpRows, RunContext, Workload};
+use crate::distribution::KeyGen;
 
 /// Repo-root-relative manifests directory.
 const MANIFESTS_DIR: &str = "datasets/manifests";
+
+/// How a workload forms the query for each `op()`.
+enum QueryMode {
+    /// One fixed query (scan-style).
+    Fixed(String),
+    /// A point lookup: `SELECT * FROM <table> WHERE <pk_col> = '<key>'`, with the
+    /// key drawn per-op from a precomputed seeded sequence (SPEC §6).
+    Point {
+        table: String,
+        pk_col: String,
+        /// Precomputed keys in distribution+seed order; `op()` cycles by index.
+        keys: Vec<String>,
+        cursor: AtomicUsize,
+    },
+}
 
 /// A read workload parameterized by the SQL it issues. One open DB shared by all
 /// workers (reads are `&self` on `Database`).
 pub struct ReadWorkload {
     name: &'static str,
-    /// The query each `op()` executes.
-    query: String,
+    mode: QueryMode,
     db: Option<Arc<Database>>,
 }
 
@@ -33,9 +49,61 @@ impl ReadWorkload {
     pub fn full_scan(table: &str) -> Self {
         Self {
             name: "read.full_scan",
-            query: format!("SELECT * FROM {table}"),
+            mode: QueryMode::Fixed(format!("SELECT * FROM {table}")),
             db: None,
         }
+    }
+
+    /// `read.type_heavy` — scan over a collections/UDT shape. Stresses
+    /// deserialization cost vs. I/O (SPEC §6). Same scan shape, richer schema.
+    pub fn type_heavy(table: &str) -> Self {
+        Self {
+            name: "read.type_heavy",
+            mode: QueryMode::Fixed(format!("SELECT * FROM {table}")),
+            db: None,
+        }
+    }
+
+    /// `read.wide_partition` — full scan over a `wide_rows` shape, exercising
+    /// large-partition behavior (SPEC §6).
+    pub fn wide_partition(table: &str) -> Self {
+        Self {
+            name: "read.wide_partition",
+            mode: QueryMode::Fixed(format!("SELECT * FROM {table}")),
+            db: None,
+        }
+    }
+
+    /// `read.point_lookup` — `SELECT … WHERE pk = ?` against a single partition.
+    /// Latency-sensitive; stresses Index.db/Summary.db + partition seek (SPEC §6).
+    /// Keys match the `basic` corpus key format (`k{i:016x}`).
+    pub fn point_lookup(table: &str, pk_col: &str) -> Self {
+        Self {
+            name: "read.point_lookup",
+            mode: QueryMode::Point {
+                table: table.to_string(),
+                pk_col: pk_col.to_string(),
+                keys: Vec::new(),
+                cursor: AtomicUsize::new(0),
+            },
+            db: None,
+        }
+    }
+
+    /// Precompute the point-lookup key sequence from the dataset's row count,
+    /// drawn in distribution+seed order so runs are reproducible (SPEC §6).
+    fn build_point_keys(rows: u64, distribution: &str, seed: u64) -> anyhow::Result<Vec<String>> {
+        // Sample a bounded pool of keys (not all rows) — enough to exercise the
+        // distribution without holding millions of strings.
+        let pool = rows.min(100_000).max(1);
+        let mut gen = KeyGen::new(distribution, pool, seed)?;
+        let count = 10_000usize;
+        Ok((0..count)
+            .map(|_| {
+                let idx = gen.next_key();
+                format!("k{idx:016x}")
+            })
+            .collect())
     }
 }
 
@@ -81,6 +149,11 @@ impl Workload for ReadWorkload {
             .await
             .map_err(|e| anyhow::anyhow!("ingest dataset {}: {e}", manifest.id))?;
         self.db = Some(Arc::new(result.database));
+
+        // Point lookups need their key sequence built from the dataset size.
+        if let QueryMode::Point { keys, .. } = &mut self.mode {
+            *keys = Self::build_point_keys(manifest.rows, &ctx.distribution, ctx.seed)?;
+        }
         Ok(())
     }
 
@@ -90,10 +163,26 @@ impl Workload for ReadWorkload {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("{}: setup() not called", self.name))?;
 
+        // Form this op's query. Scans use the fixed query; point lookups pick the
+        // next key from the precomputed sequence.
+        let query = match &self.mode {
+            QueryMode::Fixed(q) => q.clone(),
+            QueryMode::Point {
+                table,
+                pk_col,
+                keys,
+                cursor,
+            } => {
+                let i = cursor.fetch_add(1, Ordering::Relaxed) % keys.len().max(1);
+                let key = keys.get(i).map(String::as_str).unwrap_or("k0");
+                format!("SELECT * FROM {table} WHERE {pk_col} = '{key}'")
+            }
+        };
+
         // Stream rows through a bounded channel so a full scan stays memory-
         // bounded (SPEC §7 <128 MB target for streaming reads).
         let mut iter = db
-            .execute_streaming(&self.query, StreamingConfig::default())
+            .execute_streaming(&query, StreamingConfig::default())
             .await
             .map_err(|e| anyhow::anyhow!("execute_streaming: {e}"))?;
 
