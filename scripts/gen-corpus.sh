@@ -117,8 +117,12 @@ echo "==> nodetool flush"
 docker exec "$CONTAINER" nodetool flush "$KEYSPACE"
 
 echo "==> Copying SSTables to ${OUT_DIR}"
+# Preserve the keyspace directory level so SSTable discovery infers the correct
+# keyspace (datasets/<id>/<keyspace>/<table>-<uuid>/...). Copying the keyspace
+# dir's *contents* instead would make discovery mis-infer the keyspace from the
+# dataset dir name, and queries silently return zero rows.
 rm -rf "$OUT_DIR"; mkdir -p "$OUT_DIR"
-docker cp "$CONTAINER:/var/lib/cassandra/data/$KEYSPACE/." "$OUT_DIR/"
+docker cp "$CONTAINER:/var/lib/cassandra/data/$KEYSPACE" "$OUT_DIR/"
 
 # --- manifest ---------------------------------------------------------------
 echo "==> Computing SHA-256 + writing manifest"
