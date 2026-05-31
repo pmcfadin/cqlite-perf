@@ -31,6 +31,31 @@ struct Cli {
 enum Command {
     /// Run a benchmark, either from a named config or ad hoc flags (SPEC §12).
     Run(RunArgs),
+    /// Generate a dataset corpus (SPEC §12). `--source cassandra` shells out to
+    /// scripts/gen-corpus.sh.
+    Gen(GenArgs),
+    /// List/validate cached datasets against their manifests (SPEC §12).
+    Datasets(DatasetsArgs),
+}
+
+#[derive(Parser)]
+struct GenArgs {
+    /// Generator source: "cassandra" (authentic read corpus) — "writer" lands in M2.
+    #[arg(long, default_value = "cassandra")]
+    source: String,
+    #[arg(long, default_value = "S")]
+    tier: String,
+    #[arg(long, default_value = "lz4")]
+    codec: String,
+    #[arg(long, default_value = "basic")]
+    schema: String,
+}
+
+#[derive(Parser)]
+struct DatasetsArgs {
+    /// Verify each cached dataset's SHA-256 against its manifest.
+    #[arg(long)]
+    check: bool,
 }
 
 #[derive(Parser)]
@@ -85,7 +110,74 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run(args).await,
+        Command::Gen(args) => gen(args),
+        Command::Datasets(args) => datasets_cmd(args),
     }
+}
+
+/// Generate a dataset by shelling out to the generator script (SPEC §8.1).
+fn gen(args: GenArgs) -> anyhow::Result<()> {
+    if args.source != "cassandra" {
+        anyhow::bail!("gen --source '{}' not supported yet (M1: cassandra)", args.source);
+    }
+    let status = std::process::Command::new("bash")
+        .arg("scripts/gen-corpus.sh")
+        .args(["--tier", &args.tier, "--codec", &args.codec, "--schema", &args.schema])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("gen-corpus.sh failed with {status}");
+    }
+    Ok(())
+}
+
+/// Validate cached datasets against their manifests (SPEC §8.3).
+fn datasets_cmd(args: DatasetsArgs) -> anyhow::Result<()> {
+    let repo_root = std::env::current_dir()?;
+    let manifests_dir = repo_root.join("datasets/manifests");
+    if !manifests_dir.is_dir() {
+        println!("no manifests directory at {}", manifests_dir.display());
+        return Ok(());
+    }
+    let mut ok = 0;
+    let mut bad = 0;
+    let mut missing = 0;
+    for entry in std::fs::read_dir(&manifests_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let m = datasets::Manifest::from_path(&path)?;
+        let dir = datasets::data_dir(&repo_root, &m);
+        if !dir.is_dir() {
+            println!("MISSING  {} (no {})", m.id, dir.display());
+            missing += 1;
+            continue;
+        }
+        if args.check {
+            match datasets::compute_data_sha256(&dir) {
+                Ok(sha) if sha == m.sha256 => {
+                    println!("OK       {}", m.id);
+                    ok += 1;
+                }
+                Ok(sha) => {
+                    println!("MISMATCH {} (manifest {}… != {}…)", m.id, &m.sha256[..8.min(m.sha256.len())], &sha[..8]);
+                    bad += 1;
+                }
+                Err(e) => {
+                    println!("ERROR    {} ({e})", m.id);
+                    bad += 1;
+                }
+            }
+        } else {
+            println!("FOUND    {} ({})", m.id, dir.display());
+            ok += 1;
+        }
+    }
+    println!("\n{ok} ok, {bad} bad, {missing} missing");
+    if bad > 0 {
+        anyhow::bail!("{bad} dataset(s) failed validation");
+    }
+    Ok(())
 }
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {

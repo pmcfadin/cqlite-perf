@@ -51,9 +51,12 @@ pub trait Workload: Send + Sync {
 pub fn build(name: &str) -> anyhow::Result<Box<dyn Workload>> {
     match name {
         "write.ingest" => Ok(Box::new(write::WriteIngest::new())),
+        // The table name is resolved from the schema at setup time; for M1 the
+        // generated corpus uses a fixed table per schema (see cassandra_gen).
+        "read.full_scan" => Ok(Box::new(read::ReadWorkload::full_scan("basic"))),
         other => anyhow::bail!(
-            "workload '{other}' is not implemented yet (M0 ships write.ingest; \
-             read/mixed suites land in M1/M2)"
+            "workload '{other}' is not implemented yet (M1 adds read.full_scan; \
+             remaining read/mixed variants land incrementally)"
         ),
     }
 }
