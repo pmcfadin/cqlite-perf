@@ -154,18 +154,42 @@ cqlite v0.9.2 · baseline v0.9.1 · host aarch64 (10 cores)
 
 ---
 
-## 6. Milestone placement
+## 6. Milestone reprioritization (mission-first)
 
-This is a small, high-leverage addition that should land **before** further
-read/write workload breadth, because it changes how every number is consumed:
+The mission is **produce real data** for two audiences (US-1, US-2). Milestones
+are therefore reordered by how directly they serve that mission, not by the
+spec's original numbering. The spec's §16 build order is superseded here.
 
-- **M1.5 (now):** `goals.toml` schema + `cqlite-perf scorecard` subcommand +
-  `SCORECARD.md` emitter (absolute goals; regression flagging when baseline
-  supplied). Seed `goals.toml` with the §7 RSS goal and placeholder throughput/
-  latency targets the dev team will calibrate.
-- **M4 (CI):** smoke/headline workflows invoke `scorecard --enforce`; the
-  enforced exit code gates the dev-team-facing job (never blocks cqlite PRs).
+**Core (required to meet the mission):**
 
-Targets in `goals.toml` are intentionally seeded as placeholders. **The dev team
-owns calibrating them** — that act of writing down a number is itself the
-deliverable US-2 asks for.
+- **M1 — read suite + datasets.** Real read numbers for both audiences. Mostly
+  done; tail remaining = generate the codec-sweep corpora + `type_heavy` /
+  `wide_partition` corpora, add `read.clustering_slice`.
+- **M2 — write + mixed suites.** Real write/flush/compaction + mixed numbers;
+  completes workload coverage. Biggest remaining data-coverage gap.
+- **M5 — profiling.** `dhat` allocation tracking, flamegraphs, and the <128 MB
+  RSS assertions. This is the *why* behind the numbers: it turns a scorecard
+  **miss** into a **diagnosis** (e.g. the observed 310 MB streaming-scan RSS is a
+  flagged miss today — M5 explains the allocation that causes it, which is what
+  makes US-2 actionable).
+
+**Deferred (valuable, but not required for the mission):**
+
+- **M3 — bindings overhead.** A real user concern, but secondary to establishing
+  native-engine truth first. Pick up once the core data story is solid.
+- **M4 — CI + cross-version compare.** Automation and release-over-release
+  gating. Its *cheap, high-value* half already exists: the scorecard's
+  `regression_max_pct` + `--baseline` answers "did we regress vs. last release"
+  without M4's CI runners or two-checkout build machinery. The *expensive* half
+  (self-hosted runners, dual builds) is deferred.
+
+**Order of work:** finish M1 tail → **M2** → **M5**. M3/M4 only if the mission
+later demands language reach or automation.
+
+### M1.5 — the goals scorecard (done)
+
+Slotted in ahead of the above because it changes how every number is *consumed*:
+`goals.toml` schema + `cqlite-perf scorecard` + `SCORECARD.md` emitter (absolute
+goals; regression flagging when a baseline is supplied). Targets in `goals.toml`
+are seeded placeholders — **the dev team owns calibrating them**, and that act of
+writing down a number is itself the deliverable US-2 asks for.
