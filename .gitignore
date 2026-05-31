@@ -1,0 +1,12 @@
+/target
+/datasets/**
+!/datasets/manifests/
+!/datasets/manifests/**
+/reports/*.local.*
+
+# macOS
+.DS_Store
+._*
+
+# cargo backups
+*.orig

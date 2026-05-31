@@ -1,0 +1,6 @@
+[toolchain]
+# Pin to the same toolchain cqlite builds with, to avoid codegen-difference
+# noise in the numbers. Tracks cqlite's rust-toolchain.toml (1.88.0).
+channel = "1.88.0"
+components = ["clippy", "rustfmt"]
+profile = "default"

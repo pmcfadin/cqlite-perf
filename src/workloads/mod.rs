@@ -1,0 +1,59 @@
+//! Workload trait and the immutable per-run context (SPEC §5).
+//!
+//! Every suite implements one trait so the runner, metrics, and reporting stay
+//! uniform.
+
+use async_trait::async_trait;
+
+pub mod mixed;
+pub mod read;
+pub mod write;
+
+/// Immutable per-run config handed to every workload (SPEC §5).
+#[derive(Debug, Clone)]
+pub struct RunContext {
+    pub tier: String,
+    pub schema: String,
+    pub codec: String,
+    pub distribution: String,
+    pub concurrency: usize,
+    pub warmup_secs: u64,
+    pub duration_secs: u64,
+    pub trials: u32,
+    pub seed: u64,
+    pub cold_cache: bool,
+    /// Scratch directory root for workloads that generate their own data
+    /// (write/volume). Read workloads resolve datasets via manifest instead.
+    pub work_dir: std::path::PathBuf,
+}
+
+/// Outcome of a single `op()` call: how many rows it touched, for rows/sec
+/// accounting (SPEC §5).
+pub type OpRows = u64;
+
+#[async_trait]
+pub trait Workload: Send + Sync {
+    /// Stable identifier, e.g. "read.point_lookup".
+    fn name(&self) -> &'static str;
+
+    /// One-time setup: open DB / build write engine / preselect keys.
+    async fn setup(&mut self, ctx: &RunContext) -> anyhow::Result<()>;
+
+    /// Execute exactly one operation. Timed by the runner.
+    /// Returns rows touched (for rows/sec accounting).
+    async fn op(&self, worker: usize) -> anyhow::Result<OpRows>;
+
+    /// Teardown: shutdown DB, drop temp dirs.
+    async fn teardown(&mut self) -> anyhow::Result<()>;
+}
+
+/// Construct a workload by its stable name (e.g. "write.ingest").
+pub fn build(name: &str) -> anyhow::Result<Box<dyn Workload>> {
+    match name {
+        "write.ingest" => Ok(Box::new(write::WriteIngest::new())),
+        other => anyhow::bail!(
+            "workload '{other}' is not implemented yet (M0 ships write.ingest; \
+             read/mixed suites land in M1/M2)"
+        ),
+    }
+}

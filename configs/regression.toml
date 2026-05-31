@@ -1,0 +1,15 @@
+# Quick smoke (S tier, low concurrency) — the PR-gate / sanity config (SPEC §12, §14).
+# Asserts the harness runs and emits valid JSON; does not gate on absolute numbers.
+warmup = "2s"
+duration = "5s"
+trials = 1
+concurrency = [1, 2]
+distributions = ["zipfian"]
+codecs = ["lz4"]
+tiers = ["S"]
+cold_cache = false
+seed = 42
+
+[[suite]]
+name = "write"
+workloads = ["ingest"]
