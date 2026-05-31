@@ -303,8 +303,8 @@ dependencies = [
 
 [[package]]
 name = "cqlite-core"
-version = "0.9.1"
-source = "git+https://github.com/pmcfadin/cqlite.git?tag=v0.9.1#af5750507a4f2e4e40502248f794aba9eb4a28a9"
+version = "0.9.2"
+source = "git+https://github.com/pmcfadin/cqlite.git?tag=v0.9.2#95b4efb975427cf2972684b4c9d85aac6f36705b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -325,7 +325,6 @@ dependencies = [
  "log",
  "lru",
  "lz4_flex",
- "md5",
  "memmap2",
  "murmur3",
  "nom",
@@ -986,12 +985,6 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
-
-[[package]]
-name = "md5"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 
 [[package]]
 name = "memchr"
