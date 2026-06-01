@@ -33,7 +33,26 @@ enum QueryMode {
         keys: Vec<String>,
         cursor: AtomicUsize,
     },
+    /// A clustering slice: `SELECT * FROM <table> WHERE <pk_col> = '<key>' AND
+    /// <ck_col> >= <lo> AND <ck_col> < <hi>` — a bounded range over the
+    /// clustering key inside one partition (SPEC §6). The partition is drawn
+    /// per-op from a seeded sequence; the `[lo, hi)` window is fixed.
+    ClusteringSlice {
+        table: String,
+        pk_col: String,
+        ck_col: String,
+        /// Precomputed partition keys in distribution+seed order.
+        keys: Vec<String>,
+        lo: i64,
+        hi: i64,
+        cursor: AtomicUsize,
+    },
 }
+
+/// Wide-partition corpus convention (see `scripts/gen-corpus.sh`, `wide_rows`
+/// CSV writer): the loader emits this many partitions, keyed `p{idx:04}`, each
+/// with `rows / WIDE_PARTITIONS` clustering rows.
+const WIDE_PARTITIONS: u64 = 100;
 
 /// A read workload parameterized by the SQL it issues. One open DB shared by all
 /// workers (reads are `&self` on `Database`).
@@ -94,6 +113,40 @@ impl ReadWorkload {
             db: None,
             meta: None,
         }
+    }
+
+    /// `read.clustering_slice` — bounded range over clustering keys within one
+    /// partition of the `wide_rows` corpus (SPEC §6). Stresses the in-partition
+    /// scan: partition seek + clustering-range iteration, distinct from a
+    /// whole-partition read.
+    pub fn clustering_slice(table: &str, pk_col: &str, ck_col: &str) -> Self {
+        Self {
+            name: "read.clustering_slice",
+            mode: QueryMode::ClusteringSlice {
+                table: table.to_string(),
+                pk_col: pk_col.to_string(),
+                ck_col: ck_col.to_string(),
+                keys: Vec::new(),
+                lo: 0,
+                hi: 200,
+                cursor: AtomicUsize::new(0),
+            },
+            db: None,
+            meta: None,
+        }
+    }
+
+    /// Precompute a partition-key sequence for the clustering slice, drawn over
+    /// the corpus's partition count in distribution+seed order (SPEC §6).
+    fn build_partition_keys(distribution: &str, seed: u64) -> anyhow::Result<Vec<String>> {
+        let mut gen = KeyGen::new(distribution, WIDE_PARTITIONS, seed)?;
+        let count = 10_000usize;
+        Ok((0..count)
+            .map(|_| {
+                let idx = gen.next_key();
+                format!("p{idx:04}")
+            })
+            .collect())
     }
 
     /// Precompute the point-lookup key sequence from the dataset's row count,
@@ -170,6 +223,10 @@ impl Workload for ReadWorkload {
         if let QueryMode::Point { keys, .. } = &mut self.mode {
             *keys = Self::build_point_keys(manifest.rows, &ctx.distribution, ctx.seed)?;
         }
+        // Clustering slices need their partition-key sequence.
+        if let QueryMode::ClusteringSlice { keys, .. } = &mut self.mode {
+            *keys = Self::build_partition_keys(&ctx.distribution, ctx.seed)?;
+        }
         Ok(())
     }
 
@@ -192,6 +249,22 @@ impl Workload for ReadWorkload {
                 let i = cursor.fetch_add(1, Ordering::Relaxed) % keys.len().max(1);
                 let key = keys.get(i).map(String::as_str).unwrap_or("k0");
                 format!("SELECT * FROM {table} WHERE {pk_col} = '{key}'")
+            }
+            QueryMode::ClusteringSlice {
+                table,
+                pk_col,
+                ck_col,
+                keys,
+                lo,
+                hi,
+                cursor,
+            } => {
+                let i = cursor.fetch_add(1, Ordering::Relaxed) % keys.len().max(1);
+                let key = keys.get(i).map(String::as_str).unwrap_or("p0000");
+                format!(
+                    "SELECT * FROM {table} WHERE {pk_col} = '{key}' \
+                     AND {ck_col} >= {lo} AND {ck_col} < {hi}"
+                )
             }
         };
 

@@ -71,6 +71,10 @@ pub fn build(name: &str) -> anyhow::Result<Box<dyn Workload>> {
         // generated corpus uses a fixed table per schema (see cassandra_gen).
         "read.full_scan" => Ok(Box::new(read::ReadWorkload::full_scan("basic"))),
         "read.point_lookup" => Ok(Box::new(read::ReadWorkload::point_lookup("basic", "id"))),
+        // Slice ranges over the wide_rows composite-PK corpus (pk, ck).
+        "read.clustering_slice" => Ok(Box::new(read::ReadWorkload::clustering_slice(
+            "wide_rows", "pk", "ck",
+        ))),
         "read.type_heavy" => Ok(Box::new(read::ReadWorkload::type_heavy("collections"))),
         "read.wide_partition" => Ok(Box::new(read::ReadWorkload::wide_partition("wide_rows"))),
         other => anyhow::bail!(

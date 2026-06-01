@@ -108,6 +108,32 @@ pub fn render_summary(results: &[RunResult]) -> String {
         );
     }
 
+    // Honesty guard (US-1): any read workload that returned zero rows timed an
+    // empty result set, so its latency/throughput is not a real measurement.
+    // Surface it loudly rather than letting a plausible µs number mislead.
+    let empty: Vec<&RunResult> = sorted
+        .iter()
+        .copied()
+        .filter(|r| r.workload.starts_with("read.") && r.throughput.rows_per_sec == 0.0)
+        .collect();
+    if !empty.is_empty() {
+        let _ = writeln!(s, "\n## ⚠ Caveats\n");
+        let _ = writeln!(
+            s,
+            "The following read workload(s) returned **0 rows** — they executed \
+             against a real corpus but over an empty result set, so their latency \
+             and throughput numbers are **not meaningful**. Root cause: cqlite \
+             {version} returns no rows for partition-restricted reads \
+             (`WHERE pk = ?`); see `docs/feedback-to-cqlite-team.md` §6."
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for r in &empty {
+            if seen.insert(r.workload.as_str()) {
+                let _ = writeln!(s, "- `{}`", r.workload);
+            }
+        }
+    }
+
     // Codec sweep (SPEC §10) — only meaningful with >1 codec present.
     let codecs: std::collections::BTreeSet<&str> =
         results.iter().map(|r| r.dataset.codec.as_str()).collect();
