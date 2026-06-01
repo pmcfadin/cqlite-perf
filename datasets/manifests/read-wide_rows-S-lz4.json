@@ -1,0 +1,14 @@
+{
+  "id": "read-wide_rows-S-lz4",
+  "tier": "S",
+  "schema": "wide_rows",
+  "codec": "lz4",
+  "rows": 100000,
+  "bytes": 606208,
+  "generator": "cassandra-5.0",
+  "generator_version": "5.0.0",
+  "cqlite_schema_ref": "schemas/wide_rows.cql",
+  "sha256": "3e058c1d022a98319370e9b3d347fb23dbee63d4930d19e0055a656113ec5af8",
+  "created_utc": "2026-06-01T03:53:02Z",
+  "path_hint": "datasets/read-wide_rows-S-lz4/"
+}
