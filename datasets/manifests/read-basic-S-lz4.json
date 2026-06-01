@@ -4,11 +4,11 @@
   "schema": "basic",
   "codec": "lz4",
   "rows": 100000,
-  "bytes": 5971968,
+  "bytes": 5865472,
   "generator": "cassandra-5.0",
   "generator_version": "5.0.0",
   "cqlite_schema_ref": "schemas/basic.cql",
-  "sha256": "5426c8bb510c018cb8e2a5808e36bed5c1d2b5ffb3f0c18dd8f634c3836470b9",
-  "created_utc": "2026-05-31T02:36:54Z",
+  "sha256": "971e6e48a1af6c54a2efe6ba4d9a790ded085560700b75d15b790568b35f3366",
+  "created_utc": "2026-06-01T03:36:58Z",
   "path_hint": "datasets/read-basic-S-lz4/"
 }
