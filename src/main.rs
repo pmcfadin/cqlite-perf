@@ -306,9 +306,15 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             for codec in &plan.codecs {
                 for distribution in &plan.distributions {
                     for &conc in &plan.concurrency {
+                        // Read workloads are bound to their corpus schema; honor
+                        // that so the whole suite runs in one invocation. Other
+                        // workloads use the caller's --schema.
+                        let schema = crate::workloads::default_schema(name)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| args.schema.clone());
                         let ctx = RunContext {
                             tier: tier.clone(),
-                            schema: args.schema.clone(),
+                            schema,
                             codec: codec.clone(),
                             distribution: distribution.clone(),
                             concurrency: conc,

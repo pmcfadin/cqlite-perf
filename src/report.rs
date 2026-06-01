@@ -80,23 +80,25 @@ pub fn render_summary(results: &[RunResult]) -> String {
     let _ = writeln!(s, "## Throughput by concurrency\n");
     let _ = writeln!(
         s,
-        "| Workload | Conc | Cache | ops/sec | rows/sec | p50 µs | p99 µs | p99.9 µs | CV |"
+        "| Workload | Codec | Conc | Cache | ops/sec | rows/sec | p50 µs | p99 µs | p99.9 µs | CV |"
     );
     let _ = writeln!(
         s,
-        "|---|---:|---|---:|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|"
     );
     let mut sorted: Vec<&RunResult> = results.iter().collect();
     sorted.sort_by(|a, b| {
         a.workload
             .cmp(&b.workload)
+            .then(a.dataset.codec.cmp(&b.dataset.codec))
             .then(a.concurrency.cmp(&b.concurrency))
     });
     for r in &sorted {
         let _ = writeln!(
             s,
-            "| {} | {} | {} | {:.0} | {:.0} | {} | {} | {} | {:.3} |",
+            "| {} | {} | {} | {} | {:.0} | {:.0} | {} | {} | {} | {:.3} |",
             r.workload,
+            r.dataset.codec,
             r.concurrency,
             r.cache,
             r.throughput.ops_per_sec,

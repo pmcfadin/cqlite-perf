@@ -63,6 +63,19 @@ pub trait Workload: Send + Sync {
     async fn teardown(&mut self) -> anyhow::Result<()>;
 }
 
+/// The corpus schema a read workload is bound to (its table lives in that
+/// schema). Lets the runner resolve the right manifest per workload so the
+/// whole read suite runs in one invocation, instead of forcing one global
+/// `--schema`. `None` → the caller's `--schema` applies (write/mixed).
+pub fn default_schema(name: &str) -> Option<&'static str> {
+    match name {
+        "read.full_scan" | "read.point_lookup" => Some("basic"),
+        "read.type_heavy" => Some("collections"),
+        "read.wide_partition" | "read.clustering_slice" => Some("wide_rows"),
+        _ => None,
+    }
+}
+
 /// Construct a workload by its stable name (e.g. "write.ingest").
 pub fn build(name: &str) -> anyhow::Result<Box<dyn Workload>> {
     match name {

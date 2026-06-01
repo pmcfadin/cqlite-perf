@@ -1,0 +1,19 @@
+# Headline read run (SPEC §6 + §10) — the committed deliverable report. Every
+# read workload, with the codec dimension swept. full_scan/point_lookup are
+# basic-schema and exist for all 5 codecs; the type_heavy/wide_partition/
+# clustering_slice corpora are lz4-only, so their non-lz4 combos skip cleanly.
+# One invocation → one SUMMARY.md carrying both the per-workload table and the
+# codec sweep table. Run: cqlite-perf run --config configs/read-headline.toml
+warmup = "2s"
+duration = "5s"
+trials = 3
+concurrency = [1]
+distributions = ["zipfian"]
+codecs = ["none", "lz4", "snappy", "deflate", "zstd"]
+tiers = ["S"]
+cold_cache = false
+seed = 42
+
+[[suite]]
+name = "read"
+workloads = ["full_scan", "point_lookup", "clustering_slice", "type_heavy", "wide_partition"]

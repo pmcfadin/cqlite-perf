@@ -1,0 +1,18 @@
+# Full read suite (SPEC §6) — every read workload in one run, each resolving its
+# own corpus schema (basic / collections / wide_rows) via workloads::default_schema.
+# Codec is lz4 because the non-basic corpora are generated lz4-only; the codec
+# sweep itself lives in configs/codec-sweep.toml. Run with:
+#   cqlite-perf run --config configs/read-suite.toml
+warmup = "2s"
+duration = "5s"
+trials = 3
+concurrency = [1]
+distributions = ["zipfian"]
+codecs = ["lz4"]
+tiers = ["S"]
+cold_cache = false
+seed = 42
+
+[[suite]]
+name = "read"
+workloads = ["full_scan", "point_lookup", "clustering_slice", "type_heavy", "wide_partition"]
