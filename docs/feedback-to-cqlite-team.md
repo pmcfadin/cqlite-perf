@@ -64,10 +64,18 @@ the `read.point_lookup` and `read.clustering_slice` workloads. Through
 Findings:
 - **Partition-key equality (`WHERE pk = ?`) returns 0 rows** on both a single-PK
   table (`basic`, `id text PRIMARY KEY`) and a composite-PK table (`wide_rows`,
-  `(pk, ck)`). The keys exist — a full scan returns them. The parser and the
-  residual evaluator both handle `=`/`>=`/`<`/`BETWEEN` (see `select_parser.rs`,
-  `select_executor.rs::evaluate_comparison`), so the row never reaches the
-  filter: the partition-restricted read path yields no candidate rows.
+  `(pk, ck)`). The keys exist — a full scan returns them.
+- **Root cause (confirmed): the partition-key column is never materialized into
+  result rows.** A `SELECT * FROM basic` row exposes only
+  `[age, name, payload, email]` — **`id` is absent**. The raw key bytes are
+  present and correct (`RowKey([107,48,48,…])` = ASCII `"k0000000000000000"`),
+  so the key decodes fine; it just isn't reconstructed back into the row as the
+  `id` column. `build_row_from_scan` (`select_executor.rs`) is meant to
+  synthesise partition-key columns from the key bytes when the schema is known —
+  that step is not producing the column. Consequently the residual filter
+  evaluates `id = 'k…'` against a row that has **no `id` value**, so it matches
+  nothing and every partition-restricted read returns 0. Repro:
+  `cargo run --example probe_cols`.
 - **Clustering-range predicates** (`>=`/`<`, `BETWEEN`) consequently also return
   0 rows — they can't be exercised independently of the partition predicate.
 - **`LIMIT` is ignored** on the streaming path (`LIMIT 3` → all 100000 rows).
