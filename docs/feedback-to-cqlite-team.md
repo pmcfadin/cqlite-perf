@@ -47,6 +47,38 @@ writers need a Mutex and throughput caps low (~282 ops/sec single-thread in my
 harness). Either a batched/async write path or a documented "this is the intended
 concurrency model" note would help callers set expectations.
 
+## 6. Query predicate path: partition-restricted reads return 0 rows (v0.9.2)
+This is the biggest blocker to benchmarking the read suite, found while building
+the `read.point_lookup` and `read.clustering_slice` workloads. Through
+`Database::execute_streaming` — the *same* API a full scan uses successfully:
+
+| Query | Rows returned | Expected |
+|-------|--------------:|---------:|
+| `SELECT * FROM basic` | 100000 | 100000 ✅ |
+| `SELECT * FROM basic WHERE id = '<existing key>'` | **0** | 1 ❌ |
+| `SELECT * FROM wide_rows WHERE pk = '<existing key>'` | **0** | ~1000 ❌ |
+| `... AND ck >= 0 AND ck < 200` | **0** | ~200 ❌ |
+| `... AND ck BETWEEN 0 AND 199` | **0** | ~200 ❌ |
+| `SELECT * FROM basic LIMIT 3` | **100000** | 3 ❌ |
+
+Findings:
+- **Partition-key equality (`WHERE pk = ?`) returns 0 rows** on both a single-PK
+  table (`basic`, `id text PRIMARY KEY`) and a composite-PK table (`wide_rows`,
+  `(pk, ck)`). The keys exist — a full scan returns them. The parser and the
+  residual evaluator both handle `=`/`>=`/`<`/`BETWEEN` (see `select_parser.rs`,
+  `select_executor.rs::evaluate_comparison`), so the row never reaches the
+  filter: the partition-restricted read path yields no candidate rows.
+- **Clustering-range predicates** (`>=`/`<`, `BETWEEN`) consequently also return
+  0 rows — they can't be exercised independently of the partition predicate.
+- **`LIMIT` is ignored** on the streaming path (`LIMIT 3` → all 100000 rows).
+
+Impact on a benchmarking consumer: `read.point_lookup` and `read.clustering_slice`
+execute and time cleanly but over **empty result sets**, so their latency and
+throughput numbers are not meaningful until partition-restricted reads return
+rows. The `point_lookup` p99 goal in `goals.toml` is currently measuring empty
+queries. Repro: `cargo run --example probe_point` / `probe_slice` in cqlite-perf
+(any equality-predicate SELECT reproduces it).
+
 ---
 Thanks — cqlite was straightforward to link and build once I knew the feature
 flags. Items 1–2 are pure documentation and would remove most of the friction.
