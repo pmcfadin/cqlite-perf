@@ -14,7 +14,7 @@ use cqlite_core::ingestion::{ingest, IngestionConfig};
 use cqlite_core::query::result::StreamingConfig;
 use cqlite_core::{Config, Database};
 
-use super::{OpRows, RunContext, Workload};
+use super::{DatasetMeta, OpRows, RunContext, Workload};
 use crate::distribution::KeyGen;
 
 /// Repo-root-relative manifests directory.
@@ -41,6 +41,8 @@ pub struct ReadWorkload {
     name: &'static str,
     mode: QueryMode,
     db: Option<Arc<Database>>,
+    /// On-disk size + row count of the resolved corpus, set at `setup`.
+    meta: Option<DatasetMeta>,
 }
 
 impl ReadWorkload {
@@ -51,6 +53,7 @@ impl ReadWorkload {
             name: "read.full_scan",
             mode: QueryMode::Fixed(format!("SELECT * FROM {table}")),
             db: None,
+            meta: None,
         }
     }
 
@@ -61,6 +64,7 @@ impl ReadWorkload {
             name: "read.type_heavy",
             mode: QueryMode::Fixed(format!("SELECT * FROM {table}")),
             db: None,
+            meta: None,
         }
     }
 
@@ -71,6 +75,7 @@ impl ReadWorkload {
             name: "read.wide_partition",
             mode: QueryMode::Fixed(format!("SELECT * FROM {table}")),
             db: None,
+            meta: None,
         }
     }
 
@@ -87,6 +92,7 @@ impl ReadWorkload {
                 cursor: AtomicUsize::new(0),
             },
             db: None,
+            meta: None,
         }
     }
 
@@ -113,6 +119,10 @@ impl Workload for ReadWorkload {
         self.name
     }
 
+    fn dataset_meta(&self) -> Option<DatasetMeta> {
+        self.meta
+    }
+
     async fn setup(&mut self, ctx: &RunContext) -> anyhow::Result<()> {
         // Resolve the dataset by manifest query (tier+schema+codec), verify its
         // checksum, then open it via the one-shot ingestion flow.
@@ -125,6 +135,12 @@ impl Workload for ReadWorkload {
         };
         let manifest = crate::datasets::resolve(&manifests_dir, &q)?;
         let dataset_dir = crate::datasets::data_dir(&repo_root, &manifest);
+        // Capture on-disk size + corpus rows so the runner can report them
+        // (the codec sweep's size-vs-speed table, SPEC §10).
+        self.meta = Some(DatasetMeta {
+            bytes: manifest.bytes,
+            rows: manifest.rows,
+        });
 
         let computed = crate::datasets::compute_data_sha256(&dataset_dir)?;
         if computed != manifest.sha256 {

@@ -30,10 +30,16 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
     let mut total_rows: u64 = 0;
     let mut peak_rss: u64 = 0;
     let mut cpu_means: Vec<f64> = Vec::new();
+    // Static corpus facts (on-disk size, row count) for manifest-backed read
+    // workloads; None for write/mixed. Captured once after the first setup.
+    let mut dataset_meta: Option<workloads::DatasetMeta> = None;
 
     for trial in 0..ctx.trials {
         let mut boxed = workloads::build(name)?;
         boxed.setup(ctx).await?;
+        if dataset_meta.is_none() {
+            dataset_meta = boxed.dataset_meta();
+        }
 
         if ctx.cold_cache {
             drop_page_cache();
@@ -101,8 +107,10 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
         harness_version: HARNESS_VERSION.to_string(),
         dataset: DatasetInfo {
             tier: ctx.tier.clone(),
-            rows: total_rows,
-            bytes: 0,
+            // Corpus row count from the manifest when known; else rows touched
+            // (write/mixed, which have no manifest).
+            rows: dataset_meta.map(|m| m.rows).unwrap_or(total_rows),
+            bytes: dataset_meta.map(|m| m.bytes).unwrap_or(0),
             codec: ctx.codec.clone(),
             schema: ctx.schema.clone(),
         },

@@ -1,0 +1,14 @@
+{
+  "id": "read-basic-S-deflate",
+  "tier": "S",
+  "schema": "basic",
+  "codec": "deflate",
+  "rows": 100000,
+  "bytes": 5853184,
+  "generator": "cassandra-5.0",
+  "generator_version": "5.0.0",
+  "cqlite_schema_ref": "schemas/basic.cql",
+  "sha256": "d906f34cc56de2fce8546a282c437187145d9e0ac79d2b2b3f17abf69a529462",
+  "created_utc": "2026-06-01T03:41:30Z",
+  "path_hint": "datasets/read-basic-S-deflate/"
+}

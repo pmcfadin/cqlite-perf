@@ -1,0 +1,14 @@
+{
+  "id": "read-basic-S-snappy",
+  "tier": "S",
+  "schema": "basic",
+  "codec": "snappy",
+  "rows": 100000,
+  "bytes": 6942720,
+  "generator": "cassandra-5.0",
+  "generator_version": "5.0.0",
+  "cqlite_schema_ref": "schemas/basic.cql",
+  "sha256": "a2e965c2a972d5b55e7079102c28933d468ca729c8ca0b7c7f50a592d00b98f2",
+  "created_utc": "2026-06-01T03:40:21Z",
+  "path_hint": "datasets/read-basic-S-snappy/"
+}
