@@ -1,0 +1,14 @@
+{
+  "id": "read-collections-S-lz4",
+  "tier": "S",
+  "schema": "collections",
+  "codec": "lz4",
+  "rows": 100000,
+  "bytes": 11591680,
+  "generator": "cassandra-5.0",
+  "generator_version": "5.0.0",
+  "cqlite_schema_ref": "schemas/collections.cql",
+  "sha256": "b28a081e5b8a6fc3f42d4d547dc8b76e22ce13aae0773692779f65b5d1e233d6",
+  "created_utc": "2026-06-01T03:51:56Z",
+  "path_hint": "datasets/read-collections-S-lz4/"
+}
