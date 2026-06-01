@@ -1,0 +1,16 @@
+# Codec sweep (SPEC §10) — read.full_scan over the basic-S corpus across every
+# compression codec, so SUMMARY.md can cross-tabulate on-disk size vs. scan
+# rows/sec. Run with: cqlite-perf run --config configs/codec-sweep.toml --schema basic
+warmup = "2s"
+duration = "5s"
+trials = 3
+concurrency = [1]
+distributions = ["zipfian"]
+codecs = ["none", "lz4", "snappy", "deflate", "zstd"]
+tiers = ["S"]
+cold_cache = false
+seed = 42
+
+[[suite]]
+name = "read"
+workloads = ["full_scan"]

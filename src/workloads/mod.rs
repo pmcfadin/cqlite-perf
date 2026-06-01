@@ -31,6 +31,16 @@ pub struct RunContext {
 /// accounting (SPEC §5).
 pub type OpRows = u64;
 
+/// Static dataset facts for a manifest-backed workload: the corpus's on-disk
+/// size and row count, captured at setup. The runner reads this to populate
+/// `DatasetInfo` so the codec sweep can report on-disk size vs. scan speed
+/// (SPEC §10). `None` for workloads that generate their own data (write/mixed).
+#[derive(Debug, Clone, Copy)]
+pub struct DatasetMeta {
+    pub bytes: u64,
+    pub rows: u64,
+}
+
 #[async_trait]
 pub trait Workload: Send + Sync {
     /// Stable identifier, e.g. "read.point_lookup".
@@ -38,6 +48,12 @@ pub trait Workload: Send + Sync {
 
     /// One-time setup: open DB / build write engine / preselect keys.
     async fn setup(&mut self, ctx: &RunContext) -> anyhow::Result<()>;
+
+    /// On-disk size + corpus row count for manifest-backed workloads, valid
+    /// after `setup`. Defaults to `None`; read workloads override it.
+    fn dataset_meta(&self) -> Option<DatasetMeta> {
+        None
+    }
 
     /// Execute exactly one operation. Timed by the runner.
     /// Returns rows touched (for rows/sec accounting).

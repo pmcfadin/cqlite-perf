@@ -1,0 +1,14 @@
+{
+  "id": "read-basic-S-none",
+  "tier": "S",
+  "schema": "basic",
+  "codec": "none",
+  "rows": 100000,
+  "bytes": 35852288,
+  "generator": "cassandra-5.0",
+  "generator_version": "5.0.0",
+  "cqlite_schema_ref": "schemas/basic.cql",
+  "sha256": "3721e1105ef43efad15397057b065fc130949587f8cfb56e93ac87bd8f631c11",
+  "created_utc": "2026-06-01T03:39:12Z",
+  "path_hint": "datasets/read-basic-S-none/"
+}
