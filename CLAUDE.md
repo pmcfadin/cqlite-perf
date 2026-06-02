@@ -8,6 +8,11 @@ git tag (currently **v0.9.2**). The engine is **not in this repo** — it lives 
 
 When benchmarking surfaces a bug in the **engine** — wrong or zero rows, ignored
 clauses, crashes, perf cliffs — it must be fixed in `pmcfadin/cqlite`, not here.
+
+> **Never push code to `pmcfadin/cqlite`.** No commits, branches, or PRs to the
+> engine repo. Engagement is limited to **issues and comments** — report the bug
+> with a repro and let the engine team write the fix.
+
 File it there with `gh`:
 
 ```
