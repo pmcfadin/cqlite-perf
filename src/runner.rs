@@ -20,7 +20,7 @@ use crate::workloads::{self, RunContext};
 const HARNESS_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The cqlite tag this harness is pinned to (SPEC §2). Surfaced in every
 /// result so reports and cross-version diffs are unambiguous.
-const CQLITE_VERSION: &str = "v0.9.2";
+const CQLITE_VERSION: &str = "v0.10.0";
 
 /// Run one workload through the full trial protocol and produce a `RunResult`.
 pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {

@@ -9,7 +9,7 @@ description = "External macro-benchmark harness for CQLite (read/write/mixed sui
 # Standalone git-tag dependency on cqlite — no local paths, fully reproducible.
 # `write-support` is non-default and required by the write suite; the defaults
 # (all-compression, state_machine) cover the read path.
-cqlite-core = { git = "https://github.com/pmcfadin/cqlite.git", tag = "v0.9.2", features = ["write-support", "cli-helpers"] }
+cqlite-core = { git = "https://github.com/pmcfadin/cqlite.git", tag = "v0.10.0", features = ["write-support", "cli-helpers"] }
 
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"

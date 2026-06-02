@@ -1,7 +1,7 @@
 # cqlite-perf — project guidance for Claude
 
 External macro-benchmark harness for **CQLite**. It depends on `cqlite-core` by
-git tag (currently **v0.9.2**). The engine is **not in this repo** — it lives at
+git tag (currently **v0.10.0**). The engine is **not in this repo** — it lives at
 <https://github.com/pmcfadin/cqlite> (`pmcfadin/cqlite`, default branch `main`).
 
 ## Filing engine bugs upstream (important)
@@ -43,12 +43,21 @@ Rules of thumb:
 - A workload is **not done until it has run against a real corpus and emitted
   rows** — compiling is not enough.
 
-## Known upstream blockers (v0.9.2)
+## Known upstream blockers (v0.10.0)
 
-- **cqlite #548** — `WHERE pk = ?` returns 0 rows: the partition-key column is not
-  materialized into `SELECT` result rows. Blocks `read.point_lookup` and
-  `read.clustering_slice` (tracked here as #13). Repro: `cargo run --example probe_cols`.
-- **cqlite #581** — `LIMIT` ignored on the streaming path. Repro: `cargo run --example probe_point`.
+- **`WHERE pk = ?` on a TEXT partition key still returns 0 rows.** The partition-key
+  column is not materialized into `SELECT` result rows (a scan exposes the regular
+  columns but not the PK), so residual filtering on it matches nothing — while
+  filtering on regular columns works. Blocks `read.point_lookup` and
+  `read.clustering_slice` (tracked here as #13). cqlite #548 fixed the UUID case
+  (#583) but not TEXT single-PK; reported anew upstream. Repro:
+  `cargo run --example probe_nonpk` (regular-col filters return rows; PK filter 0).
+
+### Fixed in v0.10.0 (were blocking in v0.9.2)
+- `LIMIT` now enforced on the streaming path (cqlite #581 → #582).
+- UUID/TIMEUUID `WHERE` returns correct rows (cqlite #583).
+- Scan throughput up ~40% on lz4 (~218k → ~311k rows/s), likely the Index.db
+  point-lookup work (#584). `write-support` is now a default feature (#558).
 
 ## Commit trailer
 
