@@ -80,6 +80,14 @@ Findings:
   0 rows — they can't be exercised independently of the partition predicate.
 - **`LIMIT` is ignored** on the streaming path (`LIMIT 3` → all 100000 rows).
 
+**Status after v0.10.0:** `LIMIT` is fixed (#582) and UUID/TIMEUUID `WHERE` is
+fixed (#583), but **TEXT single partition-key reads still return 0 rows** — the
+PK column is still not materialized into result rows. Isolation on v0.10.0
+(`cargo run --example probe_nonpk`): `WHERE age = 0` → 834, `WHERE name =
+'name-0'` → 1, `WHERE email = ...` → 1, but `WHERE id = '<key>'` → 0. So residual
+filtering works for every regular column and fails only for the partition key.
+Reported anew upstream.
+
 Impact on a benchmarking consumer: `read.point_lookup` and `read.clustering_slice`
 execute and time cleanly but over **empty result sets**, so their latency and
 throughput numbers are not meaningful until partition-restricted reads return
