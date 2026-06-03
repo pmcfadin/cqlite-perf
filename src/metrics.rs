@@ -2,6 +2,8 @@
 //! aggregation helpers. Every `RunResult` serializes to the same JSON shape so
 //! reports, regression diffs, and cross-version comparison stay uniform.
 
+use std::collections::BTreeMap;
+
 use hdrhistogram::Histogram;
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +82,12 @@ pub struct RunResult {
     pub duration_secs: u64,
     pub warmup_secs: u64,
     pub seed: u64,
+    /// Workload-specific metrics outside the standard envelope (e.g.
+    /// `flush.mb_per_sec`, `compaction.wall_ms`, `read.p99_us`). Empty for
+    /// read workloads; populated by write/mixed. Selectable in goals.toml as
+    /// `custom.<key>`. Median across trials.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

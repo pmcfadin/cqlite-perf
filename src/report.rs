@@ -110,6 +110,28 @@ pub fn render_summary(results: &[RunResult]) -> String {
         );
     }
 
+    // Write/mixed metrics (SPEC §6): flush MB/sec, compaction wall-time/read-amp,
+    // read p99 under write load — values that don't fit the throughput/latency
+    // envelope. Rendered only when some result carries them.
+    let with_custom: Vec<&RunResult> = sorted.iter().copied().filter(|r| !r.custom.is_empty()).collect();
+    if !with_custom.is_empty() {
+        let _ = writeln!(s, "\n## Write & mixed metrics\n");
+        let _ = writeln!(s, "| Workload | Conc | Metric | Value |");
+        let _ = writeln!(s, "|---|---:|---|---:|");
+        for r in &with_custom {
+            for (k, v) in &r.custom {
+                let _ = writeln!(
+                    s,
+                    "| {} | {} | {} | {} |",
+                    r.workload,
+                    r.concurrency,
+                    k,
+                    fmt_metric(*v),
+                );
+            }
+        }
+    }
+
     // Honesty guard (US-1): any read workload that returned zero rows timed an
     // empty result set, so its latency/throughput is not a real measurement.
     // Surface it loudly rather than letting a plausible µs number mislead.
@@ -165,4 +187,13 @@ pub fn render_summary(results: &[RunResult]) -> String {
     }
 
     s
+}
+
+/// Format a custom-metric value: integers print whole, fractions to 2 dp.
+fn fmt_metric(v: f64) -> String {
+    if (v.fract()).abs() < 1e-9 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.2}")
+    }
 }

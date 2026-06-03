@@ -109,7 +109,10 @@ fn metric_value(r: &RunResult, path: &str) -> Option<f64> {
         "latency_us.max" => Some(r.latency_us.max as f64),
         "resource.peak_rss_bytes" => Some(r.resource.peak_rss_bytes as f64),
         "resource.cpu_pct_mean" => Some(r.resource.cpu_pct_mean),
-        _ => None,
+        // Workload-specific metrics (write/mixed), e.g. `custom.flush.mb_per_sec`.
+        other => other
+            .strip_prefix("custom.")
+            .and_then(|k| r.custom.get(k).copied()),
     }
 }
 

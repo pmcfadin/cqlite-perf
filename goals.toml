@@ -39,8 +39,48 @@ enforce  = false                  # observed 274 MB — track, don't gate yet
 name     = "write ingest throughput (WAL-on)"
 metric   = "throughput.ops_per_sec"
 op       = ">="
-target   = 250                    # PLACEHOLDER, calibrate
+target   = 250                    # PLACEHOLDER, calibrate — fsync-per-write bound
 workload = "write.ingest"
+enforce  = false
+
+[[goal]]
+name     = "write ingest throughput (WAL-off)"
+metric   = "throughput.ops_per_sec"
+op       = ">="
+target   = 200000                 # PLACEHOLDER, calibrate — memtable-only path
+workload = "write.ingest_waloff"
+enforce  = false
+
+[[goal]]
+name     = "memtable flush throughput"
+metric   = "custom.flush.mb_per_sec"
+op       = ">="
+target   = 100                    # MB/sec — PLACEHOLDER, calibrate
+workload = "write.flush"
+enforce  = false
+
+[[goal]]
+name     = "memtable flush latency"
+metric   = "custom.flush.latency_ms_mean"
+op       = "<="
+target   = 100                    # ms per 8 MB flush — PLACEHOLDER, calibrate
+workload = "write.flush"
+enforce  = false
+
+[[goal]]
+name     = "compaction read-amp reduction"
+metric   = "custom.compaction.read_amp_after"
+op       = "<="
+target   = 1                      # K SSTables merge to 1 — PLACEHOLDER, calibrate
+workload = "write.compaction"
+enforce  = false
+
+[[goal]]
+name     = "compaction cycle wall-time"
+metric   = "custom.compaction.wall_ms_mean"
+op       = "<="
+target   = 500                    # ms to merge K small SSTables — PLACEHOLDER
+workload = "write.compaction"
 enforce  = false
 
 [[goal]]

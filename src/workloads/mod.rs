@@ -59,6 +59,16 @@ pub trait Workload: Send + Sync {
     /// Returns rows touched (for rows/sec accounting).
     async fn op(&self, worker: usize) -> anyhow::Result<OpRows>;
 
+    /// Workload-specific metrics that don't fit the standard envelope
+    /// (throughput/latency/RSS) — e.g. flush MB/sec, compaction wall-time,
+    /// read p99 under write load. Keyed by a dotted name (`flush.mb_per_sec`)
+    /// so goals.toml can select `custom.<key>`. Read once per trial after the
+    /// measurement phase and aggregated (median) across trials by the runner.
+    /// Defaults to empty; write/mixed workloads override it.
+    fn custom_metrics(&self) -> std::collections::BTreeMap<String, f64> {
+        std::collections::BTreeMap::new()
+    }
+
     /// Teardown: shutdown DB, drop temp dirs.
     async fn teardown(&mut self) -> anyhow::Result<()>;
 }
@@ -79,7 +89,10 @@ pub fn default_schema(name: &str) -> Option<&'static str> {
 /// Construct a workload by its stable name (e.g. "write.ingest").
 pub fn build(name: &str) -> anyhow::Result<Box<dyn Workload>> {
     match name {
-        "write.ingest" => Ok(Box::new(write::WriteIngest::new())),
+        "write.ingest" => Ok(Box::new(write::WriteIngest::wal_on())),
+        "write.ingest_waloff" => Ok(Box::new(write::WriteIngest::wal_off())),
+        "write.flush" => Ok(Box::new(write::WriteFlush::new())),
+        "write.compaction" => Ok(Box::new(write::WriteCompaction::new())),
         // The table name is resolved from the schema at setup time; for M1 the
         // generated corpus uses a fixed table per schema (see cassandra_gen).
         "read.full_scan" => Ok(Box::new(read::ReadWorkload::full_scan("basic"))),
