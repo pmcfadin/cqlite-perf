@@ -84,6 +84,30 @@ workload = "write.compaction"
 enforce  = false
 
 [[goal]]
+name     = "read p99 under write load (read_while_write)"
+metric   = "custom.read.p99_us"
+op       = "<="
+target   = 500000                 # 500 ms full-scan p99 while writers run — PLACEHOLDER
+workload = "mixed.read_while_write"
+enforce  = false
+
+[[goal]]
+name     = "open-loop writers keep up with target rate"
+metric   = "custom.write.ops_per_sec"
+op       = ">="
+target   = 90000                  # achieved ≥ 90% of the 100k/sec target — PLACEHOLDER
+workload = "mixed.open_loop"
+enforce  = false
+
+[[goal]]
+name     = "read p99 under open-loop write load"
+metric   = "custom.read.p99_us"
+op       = "<="
+target   = 500000                 # 500 ms full-scan p99 — PLACEHOLDER
+workload = "mixed.open_loop"
+enforce  = false
+
+[[goal]]
 name               = "scan throughput regression budget"
 metric             = "throughput.rows_per_sec"
 regression_max_pct = 10.0         # fail if >10% worse than baseline
