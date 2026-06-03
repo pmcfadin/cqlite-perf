@@ -60,11 +60,26 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
         let cpu_samples = Arc::new(Mutex::new(Vec::<f64>::new()));
         let sampler = spawn_sampler(stop.clone(), peak.clone(), cpu_samples.clone());
 
-        let (rec, ops, rows, elapsed) =
-            drive(arc.clone(), ctx.concurrency, ctx.duration_secs).await?;
+        // A mixed workload supplies a cohort plan (heterogeneous roles, some
+        // open-loop); everything else runs as a single closed-loop cohort.
+        let plan_opt = arc.work_plan(ctx.concurrency);
+        let plan = plan_opt
+            .clone()
+            .unwrap_or_else(|| workloads::WorkPlan::single("all", ctx.concurrency));
+        let (cohorts, elapsed) = drive_plan(arc.clone(), &plan, ctx.duration_secs).await?;
 
         stop.store(true, Ordering::Relaxed);
         let _ = sampler.await;
+
+        // Envelope = all cohorts merged; per-cohort detail goes to `custom`.
+        let mut rec = LatencyRecorder::new();
+        let mut ops: u64 = 0;
+        let mut rows: u64 = 0;
+        for c in &cohorts {
+            rec.merge(&c.rec);
+            ops += c.ops;
+            rows += c.rows;
+        }
 
         let ops_per_sec = ops as f64 / elapsed.as_secs_f64();
         let rows_per_sec = rows as f64 / elapsed.as_secs_f64();
@@ -80,8 +95,22 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
         drop(samples);
 
         // Snapshot workload-specific metrics from the measurement phase before
-        // teardown (op() accumulates them via interior mutability).
-        let cm = arc.custom_metrics();
+        // teardown (op() accumulates them via interior mutability), plus — for a
+        // mixed workload — per-cohort latency/throughput (read p99 under write
+        // load, CO-corrected write p99, achieved vs target rate).
+        let mut cm = arc.custom_metrics();
+        if plan_opt.is_some() {
+            for c in &cohorts {
+                let snap = c.rec.snapshot();
+                cm.insert(format!("{}.p50_us", c.label), snap.p50 as f64);
+                cm.insert(format!("{}.p99_us", c.label), snap.p99 as f64);
+                cm.insert(format!("{}.p999_us", c.label), snap.p999 as f64);
+                cm.insert(
+                    format!("{}.ops_per_sec", c.label),
+                    c.ops as f64 / elapsed.as_secs_f64(),
+                );
+            }
+        }
         if !cm.is_empty() {
             custom_trials.push(cm);
         }
@@ -205,6 +234,118 @@ async fn drive(
     }
 
     Ok((merged, total_ops, total_rows, started.elapsed()))
+}
+
+/// Per-cohort measurement result: merged latency histogram + op/row totals for
+/// one role-group of a mixed workload (or the lone "all" cohort otherwise).
+struct CohortResult {
+    label: String,
+    rec: LatencyRecorder,
+    ops: u64,
+    rows: u64,
+}
+
+/// Drive a [`workloads::WorkPlan`]: each cohort runs its workers under its own
+/// strategy — closed-loop, or open-loop at a target rate with coordinated-
+/// omission correction (SPEC §5/§6). Worker ids are handed out in plan order so
+/// `op(worker)` can dispatch by role. Returns one [`CohortResult`] per cohort
+/// plus the wall-clock elapsed.
+///
+/// Open-loop cohorts split the cohort's target rate evenly across their workers;
+/// each worker paces to its own fixed schedule and records latency from the
+/// **intended** issue time, so a backed-up system (e.g. a flush stall) surfaces
+/// as tail latency instead of being hidden by a slower issue cadence.
+async fn drive_plan(
+    wl: Arc<Box<dyn workloads::Workload>>,
+    plan: &workloads::WorkPlan,
+    secs: u64,
+) -> anyhow::Result<(Vec<CohortResult>, Duration)> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let started = Instant::now();
+
+    let mut handles = Vec::new();
+    let mut next_id = 0usize;
+    for cohort in &plan.cohorts {
+        let workers = cohort.workers.max(if cohort.workers == 0 { 0 } else { 1 });
+        for _ in 0..workers {
+            let id = next_id;
+            next_id += 1;
+            let wl = wl.clone();
+            let label = cohort.label.to_string();
+            let rate = cohort.open_loop_rate;
+            let cohort_workers = cohort.workers.max(1);
+            handles.push(tokio::spawn(async move {
+                let mut rec = LatencyRecorder::new();
+                let mut ops: u64 = 0;
+                let mut rows: u64 = 0;
+                match rate {
+                    // Closed-loop: next op as soon as the prior returns.
+                    None => {
+                        while Instant::now() < deadline {
+                            let start = Instant::now();
+                            let r = wl.op(id).await?;
+                            rec.record_micros(start.elapsed().as_micros() as u64);
+                            ops += 1;
+                            rows += r;
+                        }
+                    }
+                    // Open-loop at this worker's share of the cohort rate, with
+                    // coordinated-omission correction.
+                    Some(total_rate) => {
+                        let per_worker = (total_rate / cohort_workers as f64).max(f64::MIN_POSITIVE);
+                        let interval = Duration::from_secs_f64(1.0 / per_worker);
+                        let t0 = Instant::now();
+                        let mut slot: u32 = 0;
+                        loop {
+                            let intended = t0 + interval.saturating_mul(slot);
+                            if intended >= deadline {
+                                break;
+                            }
+                            let now = Instant::now();
+                            if now < intended {
+                                tokio::time::sleep(intended - now).await;
+                            }
+                            let r = wl.op(id).await?;
+                            // Latency from the INTENDED issue time, not the actual
+                            // start — coordinated-omission correction.
+                            rec.record_micros(intended.elapsed().as_micros() as u64);
+                            ops += 1;
+                            rows += r;
+                            slot = slot.saturating_add(1);
+                        }
+                    }
+                }
+                Ok::<(String, LatencyRecorder, u64, u64), anyhow::Error>((label, rec, ops, rows))
+            }));
+        }
+    }
+
+    // Merge per-worker results into per-cohort (by label, preserving order).
+    let mut order: Vec<String> = Vec::new();
+    let mut by_label: std::collections::HashMap<String, CohortResult> =
+        std::collections::HashMap::new();
+    for h in handles {
+        let (label, rec, ops, rows) = h.await??;
+        match by_label.get_mut(&label) {
+            Some(c) => {
+                c.rec.merge(&rec);
+                c.ops += ops;
+                c.rows += rows;
+            }
+            None => {
+                order.push(label.clone());
+                by_label.insert(
+                    label.clone(),
+                    CohortResult { label, rec, ops, rows },
+                );
+            }
+        }
+    }
+    let cohorts = order
+        .into_iter()
+        .filter_map(|l| by_label.remove(&l))
+        .collect();
+    Ok((cohorts, started.elapsed()))
 }
 
 /// Background RSS/CPU sampler (SPEC §5, step 5). Best-effort: failures to read

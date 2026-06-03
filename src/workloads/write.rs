@@ -31,13 +31,13 @@ use super::{OpRows, RunContext, Workload};
 
 const KEYSPACE: &str = "perf";
 const TABLE: &str = "ingest";
-const FLUSH_THRESHOLD: usize = 8 * 1024 * 1024; // 8 MB memtable
-const HARD_LIMIT: usize = 64 * 1024 * 1024; // 64 MB before writes are rejected
+pub(crate) const FLUSH_THRESHOLD: usize = 8 * 1024 * 1024; // 8 MB memtable
+pub(crate) const HARD_LIMIT: usize = 64 * 1024 * 1024; // 64 MB before writes are rejected
 const PAYLOAD_BYTES: usize = 256; // ~256 B value column, so rows have realistic heft
 
 /// A small basic-types schema: a text partition key plus two value columns.
 /// Mirrors the shape of `schemas/basic.cql`.
-fn basic_schema() -> TableSchema {
+pub(crate) fn basic_schema() -> TableSchema {
     let col = |name: &str| Column {
         name: name.to_string(),
         data_type: "text".to_string(),
@@ -60,7 +60,7 @@ fn basic_schema() -> TableSchema {
 }
 
 /// Build one mutation for sequence number `n` (~256 B payload).
-fn make_mutation(n: u64) -> Mutation {
+pub(crate) fn make_mutation(n: u64) -> Mutation {
     let id = format!("k{n:016x}");
     let name = format!("name-{n}");
     let payload = "x".repeat(PAYLOAD_BYTES);

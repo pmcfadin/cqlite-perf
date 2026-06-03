@@ -41,10 +41,54 @@ pub struct DatasetMeta {
     pub rows: u64,
 }
 
+/// One role-group of workers within a mixed workload. Worker ids are assigned
+/// to cohorts in plan order: the first cohort owns ids `[0, workers)`, the next
+/// `[workers, workers + next.workers)`, and so on — so `op(worker)` can dispatch
+/// by id. `open_loop_rate = None` drives the cohort closed-loop (next op as soon
+/// as the prior returns); `Some(rate)` drives it open-loop at `rate` ops/sec
+/// total across the cohort, measuring latency against the *intended* issue time
+/// for coordinated-omission correction (SPEC §5/§6).
+#[derive(Debug, Clone)]
+pub struct Cohort {
+    pub label: &'static str,
+    pub workers: usize,
+    pub open_loop_rate: Option<f64>,
+}
+
+/// How a mixed workload splits its workers across roles/driving strategies.
+/// The runner drives each cohort with its strategy and reports per-cohort
+/// latency + throughput (emitted as `custom["<label>.p99_us"]` etc.).
+#[derive(Debug, Clone)]
+pub struct WorkPlan {
+    pub cohorts: Vec<Cohort>,
+}
+
+impl WorkPlan {
+    /// A single closed-loop cohort over all workers — the implicit default for
+    /// non-mixed workloads (read/write).
+    pub fn single(label: &'static str, workers: usize) -> Self {
+        WorkPlan {
+            cohorts: vec![Cohort {
+                label,
+                workers: workers.max(1),
+                open_loop_rate: None,
+            }],
+        }
+    }
+}
+
 #[async_trait]
 pub trait Workload: Send + Sync {
     /// Stable identifier, e.g. "read.point_lookup".
     fn name(&self) -> &'static str;
+
+    /// How to split workers across roles for a mixed workload. `None` → a single
+    /// closed-loop cohort of all workers (what read/write workloads use). When
+    /// `Some`, the runner drives each cohort per its strategy and emits per-cohort
+    /// `custom` metrics. Must reflect the same role→id mapping `op()` assumes.
+    fn work_plan(&self, _concurrency: usize) -> Option<WorkPlan> {
+        None
+    }
 
     /// One-time setup: open DB / build write engine / preselect keys.
     async fn setup(&mut self, ctx: &RunContext) -> anyhow::Result<()>;
@@ -93,6 +137,8 @@ pub fn build(name: &str) -> anyhow::Result<Box<dyn Workload>> {
         "write.ingest_waloff" => Ok(Box::new(write::WriteIngest::wal_off())),
         "write.flush" => Ok(Box::new(write::WriteFlush::new())),
         "write.compaction" => Ok(Box::new(write::WriteCompaction::new())),
+        "mixed.read_while_write" => Ok(Box::new(mixed::Mixed::read_while_write())),
+        "mixed.open_loop" => Ok(Box::new(mixed::Mixed::open_loop())),
         // The table name is resolved from the schema at setup time; for M1 the
         // generated corpus uses a fixed table per schema (see cassandra_gen).
         "read.full_scan" => Ok(Box::new(read::ReadWorkload::full_scan("basic"))),
