@@ -115,15 +115,23 @@ fn count_sstables(dir: &Path) -> (u64, u64) {
 
 /// Sustained `WriteEngine::write` ingest (SPEC §6, write.ingest → writes/sec).
 ///
-/// The engine requires `&mut self` per write, so it lives behind a `Mutex`.
-/// That serializes writers — fine for the throughput-per-engine number here;
-/// M2 Issue #2 gives each worker its own engine for concurrency scaling.
+/// `WriteEngine` is `&mut self` per write and explicitly single-writer, so each
+/// worker gets **its own engine** in its own data/WAL subdir (M2 Issue #2).
+/// Worker `w` only ever touches `engines[w]`, so the per-engine `Mutex` (needed
+/// because `op` is `&self`) is always uncontended — concurrency numbers reflect
+/// N independent engines writing in parallel, not lock contention. At WAL-on,
+/// the scaling ceiling becomes shared-disk fsync throughput, which is the real
+/// thing to measure.
 pub struct WriteIngest {
     name: &'static str,
     durability: Durability,
-    engine: Option<Mutex<WriteEngine>>,
-    counter: AtomicU64,
-    /// Held to keep the scratch directory alive for the run.
+    /// One engine per worker; index by the worker id passed to `op`.
+    engines: Vec<Mutex<WriteEngine>>,
+    /// One write counter per worker (no cross-worker sharing → no contention).
+    /// Keys are unique within each engine; collisions across engines are fine,
+    /// they are separate corpora.
+    counters: Vec<AtomicU64>,
+    /// Held to keep the scratch directory (all worker subdirs) alive for the run.
     _scratch: Option<tempfile::TempDir>,
 }
 
@@ -143,8 +151,8 @@ impl WriteIngest {
         Self {
             name,
             durability,
-            engine: None,
-            counter: AtomicU64::new(0),
+            engines: Vec::new(),
+            counters: Vec::new(),
             _scratch: None,
         }
     }
@@ -160,31 +168,40 @@ impl Workload for WriteIngest {
         let scratch = tempfile::Builder::new()
             .prefix("cqlite-perf-write-ingest-")
             .tempdir_in(&ctx.work_dir)?;
-        let data_dir = scratch.path().join("data");
-        let wal_dir = scratch.path().join("wal");
-        std::fs::create_dir_all(&data_dir)?;
-        std::fs::create_dir_all(&wal_dir)?;
 
-        let config = WriteEngineConfig::new(data_dir, wal_dir, basic_schema())
-            .with_flush_threshold(FLUSH_THRESHOLD)
-            .with_hard_limit(HARD_LIMIT)
-            .with_durability(self.durability);
+        // One independent engine per worker, each in its own data/wal subdir.
+        let workers = ctx.concurrency.max(1);
+        let mut engines = Vec::with_capacity(workers);
+        let mut counters = Vec::with_capacity(workers);
+        for w in 0..workers {
+            let data_dir = scratch.path().join(format!("w{w}/data"));
+            let wal_dir = scratch.path().join(format!("w{w}/wal"));
+            std::fs::create_dir_all(&data_dir)?;
+            std::fs::create_dir_all(&wal_dir)?;
 
-        let engine =
-            WriteEngine::new(config).map_err(|e| anyhow::anyhow!("WriteEngine::new: {e}"))?;
+            let config = WriteEngineConfig::new(data_dir, wal_dir, basic_schema())
+                .with_flush_threshold(FLUSH_THRESHOLD)
+                .with_hard_limit(HARD_LIMIT)
+                .with_durability(self.durability);
+            let engine =
+                WriteEngine::new(config).map_err(|e| anyhow::anyhow!("WriteEngine::new: {e}"))?;
+            engines.push(Mutex::new(engine));
+            counters.push(AtomicU64::new(0));
+        }
 
-        self.engine = Some(Mutex::new(engine));
+        self.engines = engines;
+        self.counters = counters;
         self._scratch = Some(scratch);
         Ok(())
     }
 
-    async fn op(&self, _worker: usize) -> anyhow::Result<OpRows> {
+    async fn op(&self, worker: usize) -> anyhow::Result<OpRows> {
         let engine = self
-            .engine
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("{}: setup() not called", self.name))?;
-
-        let n = self.counter.fetch_add(1, Ordering::Relaxed);
+            .engines
+            .get(worker)
+            .ok_or_else(|| anyhow::anyhow!("{}: no engine for worker {worker}", self.name))?;
+        // Per-worker counter; only this worker reads/writes it.
+        let n = self.counters[worker].fetch_add(1, Ordering::Relaxed);
         let mutation = make_mutation(n);
 
         let mut guard = engine.lock().await;
@@ -205,7 +222,7 @@ impl Workload for WriteIngest {
     }
 
     async fn teardown(&mut self) -> anyhow::Result<()> {
-        if let Some(engine) = self.engine.take() {
+        for engine in self.engines.drain(..) {
             let mut guard = engine.lock().await;
             let _ = guard.flush().await;
             guard
@@ -213,6 +230,7 @@ impl Workload for WriteIngest {
                 .await
                 .map_err(|e| anyhow::anyhow!("WriteEngine::close: {e}"))?;
         }
+        self.counters.clear();
         self._scratch = None;
         Ok(())
     }
