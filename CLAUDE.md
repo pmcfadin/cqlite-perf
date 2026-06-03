@@ -59,6 +59,30 @@ Rules of thumb:
 - Scan throughput up ~40% on lz4 (~218k → ~311k rows/s), likely the Index.db
   point-lookup work (#584). `write-support` is now a default feature (#558).
 
+### Worked-around engine bug (M2)
+- **`maintenance_step()` panics when called from a tokio worker thread** — it is
+  sync but bridges to async via `handle.block_on`, which blows up inside a
+  runtime, so compaction is unreachable from an `async fn`. Filed as cqlite
+  **#587** with `examples/probe_compaction.rs`. `write.compaction` works around
+  it by hopping the maintenance loop onto `spawn_blocking` (engine takes its
+  own-runtime branch). Not blocking, but the per-call runtime spin-up adds noise
+  to the measured wall-time.
+
+## M2 workloads (write + mixed)
+
+Run the whole write+mixed suite + regenerate reports with
+`scripts/run-write-mixed.sh`. Workloads added:
+- `write.ingest` (WAL-on) / `write.ingest_waloff` (WAL-off) — per-worker engines,
+  real concurrency scaling. `write.flush`, `write.compaction`.
+- `mixed.read_while_write`, `mixed.open_loop` — readers full-scan the basic
+  corpus (point_lookup is blocked by #586); writers ingest. Open-loop driving
+  with coordinated-omission correction lives in `runner::drive_plan` via the
+  per-workload cohort plan (`Workload::work_plan`).
+- Write/mixed metrics outside the standard envelope ride in `RunResult.custom`
+  (`Workload::custom_metrics` + runner per-cohort emission); goals select them as
+  `custom.<key>`. `cqlite-perf report --results <jsonl>` re-renders SUMMARY +
+  SCORECARD from an accumulated results.jsonl.
+
 ## Commit trailer
 
 ```

@@ -39,6 +39,20 @@ enum Command {
     Datasets(DatasetsArgs),
     /// Judge results against goals.toml and emit SCORECARD.md (PRD addendum US-2).
     Scorecard(ScorecardArgs),
+    /// Re-render SUMMARY.md + SCORECARD.md from an existing results.jsonl without
+    /// re-running — e.g. after several `run` invocations appended to one report
+    /// dir (SPEC §11).
+    Report(ReportArgs),
+}
+
+#[derive(Parser)]
+struct ReportArgs {
+    /// results.jsonl to render (SUMMARY + SCORECARD written next to it).
+    #[arg(long)]
+    results: PathBuf,
+    /// Declared goals file for the scorecard.
+    #[arg(long, default_value = "goals.toml")]
+    goals: PathBuf,
 }
 
 #[derive(Parser)]
@@ -135,7 +149,37 @@ async fn main() -> anyhow::Result<()> {
         Command::Gen(args) => gen(args),
         Command::Datasets(args) => datasets_cmd(args),
         Command::Scorecard(args) => scorecard_cmd(args),
+        Command::Report(args) => report_cmd(args),
     }
+}
+
+/// Re-render SUMMARY.md + SCORECARD.md from an existing results.jsonl (SPEC §11).
+fn report_cmd(args: ReportArgs) -> anyhow::Result<()> {
+    let results = scorecard::load_results(&args.results)?;
+    if results.is_empty() {
+        anyhow::bail!("{} has no results", args.results.display());
+    }
+    let dir = args
+        .results
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    let summary = report::render_summary(&results);
+    std::fs::write(dir.join("SUMMARY.md"), &summary)?;
+    println!("✓ summary written to {}", dir.join("SUMMARY.md").display());
+
+    if args.goals.exists() {
+        let goals = scorecard::load_goals(&args.goals)?;
+        let judgements = scorecard::judge(&goals, &results, &[]);
+        let md = scorecard::render(&judgements, &results, &[]);
+        std::fs::write(dir.join("SCORECARD.md"), md)?;
+        println!("✓ scorecard written to {}", dir.join("SCORECARD.md").display());
+        let (_, enforced_failed) = scorecard::tally(&judgements);
+        if enforced_failed > 0 {
+            println!("  ⚠ {enforced_failed} enforced goal(s) failed");
+        }
+    }
+    Ok(())
 }
 
 /// Judge a results.jsonl against goals.toml and emit SCORECARD.md (US-2).
