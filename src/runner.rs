@@ -30,6 +30,8 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
     let mut total_rows: u64 = 0;
     let mut peak_rss: u64 = 0;
     let mut cpu_means: Vec<f64> = Vec::new();
+    // Per-trial workload-specific metrics, aggregated (median per key) below.
+    let mut custom_trials: Vec<std::collections::BTreeMap<String, f64>> = Vec::new();
     // Static corpus facts (on-disk size, row count) for manifest-backed read
     // workloads; None for write/mixed. Captured once after the first setup.
     let mut dataset_meta: Option<workloads::DatasetMeta> = None;
@@ -77,6 +79,13 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
         }
         drop(samples);
 
+        // Snapshot workload-specific metrics from the measurement phase before
+        // teardown (op() accumulates them via interior mutability).
+        let cm = arc.custom_metrics();
+        if !cm.is_empty() {
+            custom_trials.push(cm);
+        }
+
         let mut boxed = Arc::try_unwrap(arc)
             .map_err(|_| anyhow::anyhow!("workers still hold the workload after measurement"))?;
         boxed.teardown().await?;
@@ -99,6 +108,20 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
     } else {
         cpu_means.iter().sum::<f64>() / cpu_means.len() as f64
     };
+
+    // Aggregate custom metrics: median across trials, per key. Keys are unioned
+    // so a metric emitted in only some trials still reports (over those trials).
+    let mut custom: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    if !custom_trials.is_empty() {
+        let keys: std::collections::BTreeSet<String> = custom_trials
+            .iter()
+            .flat_map(|m| m.keys().cloned())
+            .collect();
+        for k in keys {
+            let vals: Vec<f64> = custom_trials.iter().filter_map(|m| m.get(&k).copied()).collect();
+            custom.insert(k, median(&vals));
+        }
+    }
 
     Ok(RunResult {
         workload: name.to_string(),
@@ -137,6 +160,7 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
         duration_secs: ctx.duration_secs,
         warmup_secs: ctx.warmup_secs,
         seed: ctx.seed,
+        custom,
     })
 }
 
