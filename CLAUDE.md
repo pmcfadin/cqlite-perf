@@ -1,8 +1,21 @@
 # cqlite-perf — project guidance for Claude
 
 External macro-benchmark harness for **CQLite**. It depends on `cqlite-core` by
-git tag (currently **v0.10.0**). The engine is **not in this repo** — it lives at
+git tag (currently **v0.11.0**). The engine is **not in this repo** — it lives at
 <https://github.com/pmcfadin/cqlite> (`pmcfadin/cqlite`, default branch `main`).
+
+## Test roadmap — `TEST_PLAN.md` (read first for any validation work)
+
+[`TEST_PLAN.md`](TEST_PLAN.md) is the canonical plan. Validation follows a
+progression — **Unknown → Known (Phase 1) → Improved (Phase 2) →
+Regression-locked (Phase 3)** — with a progress dashboard, an engine-version
+ledger, the per-version run procedure (Reference A), the correctness matrix with
+expected row counts (Reference B), and the triage flow (Reference D).
+
+**Keep it current.** When you validate an engine version, follow Reference A and
+**add a row to the ledger**; when a phase exit-criterion is met, **check its box**
+and update the dashboard counts. Correctness gates before performance — a
+workload that runs but returns wrong rows is a FAIL.
 
 ## Filing engine bugs upstream (important)
 
@@ -43,30 +56,47 @@ Rules of thumb:
 - A workload is **not done until it has run against a real corpus and emitted
   rows** — compiling is not enough.
 
-## Known upstream blockers (v0.10.0)
+## Table names must be keyspace-qualified (v0.11.0)
 
-- **`WHERE pk = ?` on a TEXT partition key still returns 0 rows.** The partition-key
-  column is not materialized into `SELECT` result rows (a scan exposes the regular
-  columns but not the PK), so residual filtering on it matches nothing — while
-  filtering on regular columns works. Blocks `read.point_lookup` and
-  `read.clustering_slice` (tracked here as #13). cqlite #548 fixed the UUID case
-  (#583) but not TEXT single-PK; reported anew upstream. Repro:
-  `cargo run --example probe_nonpk` (regular-col filters return rows; PK filter 0).
+cqlite v0.11.0 (VG7, cqlite #680) keys table identity by `(keyspace, table)`.
+An unqualified `FROM basic` no longer resolves on the query path and silently
+returns **0 rows** — every query must use `perf.basic` / `perf.wide_rows` /
+`perf.collections`. The harness query builders and the `examples/probe_*` repros
+are all qualified; keep new ones qualified too.
+
+## Known upstream blockers
+
+None currently. The two open at v0.11.0 are both fixed on `main` and validated;
+see below. **Pending the v0.12.0 tag** — the dep is temporarily pinned to a
+`rev` (commit `9054734`) in `Cargo.toml`; re-pin to `tag = "v0.12.0"` and set
+`runner::CQLITE_VERSION` back to `"v0.12.0"` once it's cut.
+
+### Fixed on main (post-v0.11.0, validated, pre-v0.12.0 tag)
+- **Clustering-key inequality bounds (`>=`, `>`, `<`) now applied** (cqlite
+  **#788**). `WHERE pk=? AND ck>=? AND ck<?` returns the slice, not the whole
+  partition. `read.clustering_slice` now genuinely slices (200 rows/op, was
+  1000). Repro: `cargo run --example probe_slice` (all forms → 200).
+- **`execute_streaming` no longer materializes the whole result** (cqlite
+  **#790**). Live-heap high-water on a 100k-row `read.full_scan` dropped 194 MB
+  → 79.5 MB (dhat); peak RSS 2.1 GB → 1.7 GB. Still appears to scale somewhat
+  with row count (not fully O(1)) — a row-count scaling test (larger corpus)
+  would confirm; not currently blocking.
+
+### Fixed in v0.11.0 (were blocking in v0.10.0)
+- **`WHERE pk = ?` on a TEXT partition key now returns correct rows** (cqlite
+  #586 → PR #588, "reconstruct TEXT partition-key columns on the scan path").
+  Unblocks `read.point_lookup` (1 row per lookup). Note it's still a full scan
+  with residual filtering per lookup (~330 ms/op) — no O(log n) partition seek
+  yet (upstream #755, open). Repro: `cargo run --example probe_point`.
+- **`maintenance_step()` no longer panics inside a tokio runtime** (cqlite #587
+  → PR #593). `write.compaction` keeps the `spawn_blocking` hop for now; it can
+  be simplified to a direct call later.
 
 ### Fixed in v0.10.0 (were blocking in v0.9.2)
 - `LIMIT` now enforced on the streaming path (cqlite #581 → #582).
 - UUID/TIMEUUID `WHERE` returns correct rows (cqlite #583).
 - Scan throughput up ~40% on lz4 (~218k → ~311k rows/s), likely the Index.db
   point-lookup work (#584). `write-support` is now a default feature (#558).
-
-### Worked-around engine bug (M2)
-- **`maintenance_step()` panics when called from a tokio worker thread** — it is
-  sync but bridges to async via `handle.block_on`, which blows up inside a
-  runtime, so compaction is unreachable from an `async fn`. Filed as cqlite
-  **#587** with `examples/probe_compaction.rs`. `write.compaction` works around
-  it by hopping the maintenance loop onto `spawn_blocking` (engine takes its
-  own-runtime branch). Not blocking, but the per-call runtime spin-up adds noise
-  to the measured wall-time.
 
 ## M2 workloads (write + mixed)
 
@@ -75,7 +105,8 @@ Run the whole write+mixed suite + regenerate reports with
 - `write.ingest` (WAL-on) / `write.ingest_waloff` (WAL-off) — per-worker engines,
   real concurrency scaling. `write.flush`, `write.compaction`.
 - `mixed.read_while_write`, `mixed.open_loop` — readers full-scan the basic
-  corpus (point_lookup is blocked by #586); writers ingest. Open-loop driving
+  corpus (a plain scan is the cleaner read-load generator; #586 is fixed so
+  point_lookup also works now); writers ingest. Open-loop driving
   with coordinated-omission correction lives in `runner::drive_plan` via the
   per-workload cohort plan (`Workload::work_plan`).
 - Write/mixed metrics outside the standard envelope ride in `RunResult.custom`

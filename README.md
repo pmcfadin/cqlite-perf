@@ -41,24 +41,24 @@ Results are appended as JSONL to `reports/<date>-<harness-version>/results.jsonl
 — the canonical record and the input to regression diffing and cross-version
 comparison (SPEC §11).
 
-## Status — M0 (skeleton)
+## Test roadmap & status
 
-The measurement loop is proven end-to-end:
+Validation follows a maturity progression — **Unknown → Known → Improved →
+Regression-locked** — tracked in **[`TEST_PLAN.md`](TEST_PLAN.md)** (correctness
+matrix, per-version runbook, progress dashboard, engine ledger).
 
-- `Workload` trait + `RunContext` (SPEC §5)
-- `Runner`: warmup → duration-based measurement → trials → closed-loop workers,
-  with best-effort RSS/CPU sampling (SPEC §5)
-- HDR latency histograms + the full metric envelope (SPEC §7)
-- JSON/JSONL emitter (SPEC §11)
-- One real workload — **`write.ingest`** — driving cqlite's `WriteEngine` with
-  zero external setup (no Docker, no pre-built corpus), which is why it, rather
-  than `read.full_scan`, is the M0 proof workload.
+| Phase | What | Status |
+|---|---|---|
+| 1 · Unknown → Known | characterize correctness, perf, memory, bottlenecks | 🟡 in progress (3/4) |
+| 2 · Improvement | file bottlenecks upstream, recalibrate targets from data, validate fixes | 🟡 in progress (1/3) |
+| 3 · Regression-locked | asserted correctness gate + baseline perf gates + CI | ⬜ not started |
 
-Subsequent milestones (SPEC §16):
+**Delivered:** read suite (full_scan / point_lookup / clustering_slice /
+type_heavy / wide_partition), write suite (ingest WAL-on/off, flush, compaction),
+mixed suite (read_while_write, open_loop with coordinated-omission correction),
+Cassandra corpus generator + manifests, codec sweep, Markdown report + goals
+scorecard, and `dhat` heap profiling. See `TEST_PLAN.md` for what's open and
+[the issues](https://github.com/pmcfadin/cqlite-perf/issues) for sequencing.
 
-- **M1** — read suite + Cassandra dataset generator + manifests + codec sweep +
-  Markdown report
-- **M2** — write/flush/compaction + mixed suite + open-loop coordinated-omission
-- **M3** — Python/Node bindings overhead table
-- **M4** — CI (smoke + headline) + cross-version `compare`
-- **M5** — `dhat` allocation profiling + flamegraphs + <128 MB assertions
+**Engine baselines:** validated against **v0.11.0** and **main@9054734**
+(post-#788/#790); re-pin to **v0.12.0** pending its tag (#16).
