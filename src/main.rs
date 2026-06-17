@@ -56,10 +56,28 @@ enum Command {
     /// (TEST_PLAN.md Reference B). Exits non-zero on any mismatch. Run this
     /// before perf when validating a new engine version.
     Validate(ValidateArgs),
+    /// Heap-scaling probe: ingest a corpus, run SELECT * FROM perf.<schema> LIMIT N,
+    /// drain the stream, and report the row count. Pair with --features dhat-heap to
+    /// capture live-heap high-water (At t-gmax) and determine whether streaming is
+    /// O(1) or O(rows) in live heap (cqlite #790 follow-up, issue #18).
+    Memscan(MemscanArgs),
 }
 
 #[derive(Parser)]
 struct ValidateArgs {
+    /// Root holding the read corpora (read-<schema>-S-lz4 subdirs).
+    #[arg(long, default_value = "datasets")]
+    datasets_root: PathBuf,
+}
+
+#[derive(Parser)]
+struct MemscanArgs {
+    /// Schema name: "basic", "wide_rows", or "collections".
+    #[arg(long, default_value = "basic")]
+    schema: String,
+    /// LIMIT to apply: number of rows to stream before stopping.
+    #[arg(long)]
+    limit: u64,
     /// Root holding the read corpora (read-<schema>-S-lz4 subdirs).
     #[arg(long, default_value = "datasets")]
     datasets_root: PathBuf,
@@ -176,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Scorecard(args) => scorecard_cmd(args),
         Command::Report(args) => report_cmd(args),
         Command::Validate(args) => validate_cmd(args).await,
+        Command::Memscan(args) => memscan_cmd(args).await,
     }
 }
 
@@ -283,6 +302,63 @@ async fn validate_cmd(args: ValidateArgs) -> anyhow::Result<()> {
         anyhow::bail!("no corpora present — nothing validated (run `cqlite-perf gen` first)");
     }
     println!("✓ correctness gate passed");
+    Ok(())
+}
+
+/// Heap-scaling probe for the streaming read path (issue #18, cqlite #790).
+///
+/// Ingests `read-<schema>-S-lz4`, runs `SELECT * FROM perf.<schema> LIMIT N`,
+/// drains the stream counting rows, and prints the row count. Build with
+/// `--features dhat-heap` to capture live-heap high-water (`At t-gmax`) and
+/// determine whether `execute_streaming` is O(1) or O(rows) in live allocation.
+async fn memscan_cmd(args: MemscanArgs) -> anyhow::Result<()> {
+    use cqlite_core::ingestion::{ingest, IngestionConfig};
+    use cqlite_core::query::result::StreamingConfig;
+    use cqlite_core::{Config, Database};
+
+    async fn count(db: &Database, q: &str) -> anyhow::Result<i64> {
+        let mut it = db.execute_streaming(q, StreamingConfig::default()).await?;
+        let mut n = 0i64;
+        while let Some(r) = it.next_async().await {
+            r.map_err(|e| anyhow::anyhow!("row error after {n}: {e}"))?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    let schema = &args.schema;
+    let subdir = format!("read-{schema}-S-lz4");
+    let schema_file = format!("schemas/{schema}.cql");
+    let data_dir = args.datasets_root.join(&subdir);
+
+    if !data_dir.exists() {
+        anyhow::bail!(
+            "corpus not found: {} (run `cqlite-perf gen --schema {schema}` first)",
+            data_dir.display()
+        );
+    }
+
+    let root = std::env::current_dir()?;
+    let cfg = IngestionConfig {
+        schema_paths: vec![root.join(&schema_file)],
+        data_dir: data_dir.clone(),
+        version_hint: Some("5.0".to_string()),
+        core_config: Config::default(),
+        table_directory_filter: None,
+    };
+
+    println!("memscan: ingesting {subdir} ...");
+    let db = ingest(cfg)
+        .await
+        .map_err(|e| anyhow::anyhow!("ingest failed: {e}"))?
+        .database;
+
+    let query = format!("SELECT * FROM perf.{schema} LIMIT {}", args.limit);
+    println!("memscan: running `{query}` ...");
+
+    let rows = count(&db, &query).await?;
+    println!("memscan: rows returned = {rows}  (limit={})", args.limit);
+
     Ok(())
 }
 
