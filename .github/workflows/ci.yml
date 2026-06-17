@@ -14,17 +14,15 @@
 #   forces a fresh generation. On a cache miss, `scripts/gen-corpus.sh`
 #   regenerates the S-tier corpora from Cassandra 5.0 in Docker.
 #
-#   `cqlite-perf datasets --check` (SHA256 vs manifest) runs as an INFORMATIONAL
-#   step: it is a true integrity assertion only for a fetched/cached corpus, but
-#   freshly generated SSTables never match the committed SHA (Data.db embeds
-#   per-cell wall-clock write timestamps — COPY FROM sets no USING TIMESTAMP —
-#   and the table dir carries a random per-creation UUID). So byte-identity is a
-#   local/release-asset concern, not a CI gate.
+#   `cqlite-perf datasets --check` (SHA256 of each present corpus's *-Data.db vs
+#   the committed manifest) is a HARD content-addressing gate. Verified in CI: a
+#   fresh gen on ubuntu-latest reproduces the committed SHA exactly (`3 ok, 0
+#   bad`). It exits non-zero only on a real mismatch (`bad`); corpora the workflow
+#   does not generate (other codecs) are reported `missing` and tolerated.
 #
 # Correctness gate (THE hard gate):
 #   `cqlite-perf validate` checks known-good ROW COUNTS for every query in
-#   TEST_PLAN.md Reference B — robust to byte/timestamp differences in
-#   regenerated corpora. A non-zero exit (any mismatch) fails the build.
+#   TEST_PLAN.md Reference B. A non-zero exit (any mismatch) fails the build.
 #   Perf jobs do NOT run if it fails.
 #
 # Linux baseline:
@@ -109,15 +107,15 @@ jobs:
           bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
           bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
 
-      - name: Corpus integrity check (informational)
-        # SHA256 vs the committed manifest. This is a HARD assertion only for a
-        # *fetched/cached* corpus (cache integrity). It is INFORMATIONAL after a
-        # fresh `gen-corpus.sh` run because Cassandra SSTable Data.db embeds
-        # per-cell wall-clock write timestamps (COPY FROM sets no USING TIMESTAMP)
-        # and the table dir carries a random per-creation UUID — so regenerated
-        # bytes legitimately differ from the manifest SHA. Row-count correctness
-        # is asserted by `validate` below, which is robust to those differences.
-        continue-on-error: true
+      - name: Verify corpus SHA256 against manifests
+        # Content-addressing gate: SHA256 of each present corpus's *-Data.db vs
+        # the committed manifest. `datasets --check` exits non-zero ONLY on a
+        # mismatch (`bad`); corpora the workflow doesn't generate (other codecs)
+        # are reported `missing` and do NOT fail. Verified in CI: a fresh
+        # gen-corpus.sh run on ubuntu-latest reproduces the committed SHA exactly
+        # (`3 ok, 0 bad`), so this is a real reproducibility assertion, not a
+        # cache-only one. Row-count correctness is asserted separately by
+        # `validate` below.
         run: ./target/release/cqlite-perf datasets --check
 
       # ── Correctness gate (HARD) ────────────────────────────────────────────────
@@ -178,11 +176,9 @@ jobs:
           bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
           bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
 
-      - name: Corpus integrity check (informational)
-        # Informational after a fresh gen (see correctness-gate job for why);
-        # the correctness-gate job already asserted row-count correctness via
-        # `validate`, and this job only runs once that gate passed (needs:).
-        continue-on-error: true
+      - name: Verify corpus SHA256 against manifests
+        # Same content-addressing gate as the correctness-gate job (exits non-zero
+        # only on a SHA mismatch; missing codecs are tolerated).
         run: ./target/release/cqlite-perf datasets --check
 
       # ── Short read smoke (Linux baseline numbers) ─────────────────────────────
