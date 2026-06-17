@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
         table_directory_filter: None,
     };
     let db = ingest(cfg).await.map_err(|e| anyhow::anyhow!("ingest: {e}"))?.database;
-    let mut it = db.execute_streaming("SELECT * FROM basic", StreamingConfig::default()).await?;
+    let mut it = db.execute_streaming("SELECT * FROM perf.basic", StreamingConfig::default()).await?;
     let mut shown = 0;
     while let Some(Ok(row)) = it.next_async().await {
         println!("columns: {:?}", row.column_names());

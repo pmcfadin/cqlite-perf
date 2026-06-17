@@ -22,10 +22,10 @@ async fn main() -> anyhow::Result<()> {
     };
     let db = ingest(cfg).await.map_err(|e| anyhow::anyhow!("ingest: {e}"))?.database;
     for q in [
-        "SELECT * FROM basic",
-        "SELECT * FROM basic WHERE id = 'k0000000000000000'",
-        "SELECT * FROM basic WHERE id = 'k0000000000000001'",
-        "SELECT * FROM basic LIMIT 3",
+        "SELECT * FROM perf.basic",
+        "SELECT * FROM perf.basic WHERE id = 'k0000000000000000'",
+        "SELECT * FROM perf.basic WHERE id = 'k0000000000000001'",
+        "SELECT * FROM perf.basic LIMIT 3",
     ] { println!("{:55} => {}", q, count(&db, q).await); }
     Ok(())
 }

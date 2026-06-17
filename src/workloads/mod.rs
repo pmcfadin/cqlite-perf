@@ -141,14 +141,17 @@ pub fn build(name: &str) -> anyhow::Result<Box<dyn Workload>> {
         "mixed.open_loop" => Ok(Box::new(mixed::Mixed::open_loop())),
         // The table name is resolved from the schema at setup time; for M1 the
         // generated corpus uses a fixed table per schema (see cassandra_gen).
-        "read.full_scan" => Ok(Box::new(read::ReadWorkload::full_scan("basic"))),
-        "read.point_lookup" => Ok(Box::new(read::ReadWorkload::point_lookup("basic", "id"))),
+        // Table names are keyspace-qualified: cqlite v0.11.0 (VG7, cqlite #680)
+        // keys table identity by (keyspace, table), so an unqualified `basic`
+        // no longer resolves on the query path — it must be `perf.basic`.
+        "read.full_scan" => Ok(Box::new(read::ReadWorkload::full_scan("perf.basic"))),
+        "read.point_lookup" => Ok(Box::new(read::ReadWorkload::point_lookup("perf.basic", "id"))),
         // Slice ranges over the wide_rows composite-PK corpus (pk, ck).
         "read.clustering_slice" => Ok(Box::new(read::ReadWorkload::clustering_slice(
-            "wide_rows", "pk", "ck",
+            "perf.wide_rows", "pk", "ck",
         ))),
-        "read.type_heavy" => Ok(Box::new(read::ReadWorkload::type_heavy("collections"))),
-        "read.wide_partition" => Ok(Box::new(read::ReadWorkload::wide_partition("wide_rows"))),
+        "read.type_heavy" => Ok(Box::new(read::ReadWorkload::type_heavy("perf.collections"))),
+        "read.wide_partition" => Ok(Box::new(read::ReadWorkload::wide_partition("perf.wide_rows"))),
         other => anyhow::bail!(
             "workload '{other}' is not implemented yet (M1 adds read.full_scan; \
              remaining read/mixed variants land incrementally)"

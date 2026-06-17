@@ -9,7 +9,10 @@ description = "External macro-benchmark harness for CQLite (read/write/mixed sui
 # Standalone git-tag dependency on cqlite — no local paths, fully reproducible.
 # `write-support` is non-default and required by the write suite; the defaults
 # (all-compression, state_machine) cover the read path.
-cqlite-core = { git = "https://github.com/pmcfadin/cqlite.git", tag = "v0.10.0", features = ["write-support", "cli-helpers"] }
+# INTERIM: pinned to a main commit to validate the #788 (clustering bounds) and
+# #790 (streaming materialization) fixes ahead of a tagged release. Re-pin to
+# `tag = "v0.12.0"` once it's cut (see CLAUDE.md flow).
+cqlite-core = { git = "https://github.com/pmcfadin/cqlite.git", rev = "9054734eec1bb9750cacc54de723311b7edd7663", features = ["write-support", "cli-helpers"] }
 
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
@@ -24,6 +27,14 @@ anyhow = "1"
 sysinfo = "0.30"                 # RSS / CPU sampling
 sha2 = "0.10"                    # dataset checksums
 tempfile = "3"                   # scratch dirs for write/volume runs
+dhat = { version = "0.3", optional = true }  # heap profiling (issue #4); slows the
+                                 # whole binary via a global allocator wrapper, so
+                                 # it's gated behind the `dhat-heap` feature.
+
+[features]
+# Swap the global allocator to dhat's and dump dhat-heap.json on exit. Build with
+# `--features dhat-heap` for a single focused workload, e.g. read.full_scan.
+dhat-heap = ["dep:dhat"]
 
 [dev-dependencies]
 criterion = "0.5"                # optional shared bench helpers

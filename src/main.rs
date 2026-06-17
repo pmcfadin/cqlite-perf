@@ -21,6 +21,15 @@ use clap::{Parser, Subcommand};
 use crate::config::{parse_concurrency, parse_secs, RunConfig};
 use crate::workloads::RunContext;
 
+// dhat heap profiling (issue #4): swap the global allocator and emit
+// dhat-heap.json on exit. Live-heap high-water (`At t-gmax`) is the number to
+// compare against the sysinfo `peak_rss_bytes` the scorecard reports — they
+// diverge when RSS is dominated by mmap/allocator-retained pages rather than
+// live allocation. Gated so normal runs keep the system allocator.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[derive(Parser)]
 #[command(name = "cqlite-perf", version, about = "CQLite macro-benchmark harness")]
 struct Cli {
@@ -143,6 +152,11 @@ struct RunArgs {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Hold the profiler for the whole process; dropping it writes dhat-heap.json
+    // and prints the Total / t-gmax / t-end summary.
+    #[cfg(feature = "dhat-heap")]
+    let _dhat = dhat::Profiler::new_heap();
+
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run(args).await,

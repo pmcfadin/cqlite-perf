@@ -20,7 +20,7 @@ use crate::workloads::{self, RunContext};
 const HARNESS_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The cqlite tag this harness is pinned to (SPEC §2). Surfaced in every
 /// result so reports and cross-version diffs are unambiguous.
-const CQLITE_VERSION: &str = "v0.10.0";
+const CQLITE_VERSION: &str = "main@9054734";  // interim: post-#788/#790, pre-v0.12.0 tag
 
 /// Run one workload through the full trial protocol and produce a `RunResult`.
 pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
@@ -150,6 +150,18 @@ pub async fn run(name: &str, ctx: &RunContext) -> anyhow::Result<RunResult> {
             let vals: Vec<f64> = custom_trials.iter().filter_map(|m| m.get(&k).copied()).collect();
             custom.insert(k, median(&vals));
         }
+    }
+
+    // dhat heap profiling (issue #4): emit the live-heap high-water (`t-gmax`)
+    // as `custom.mem.live_heap_bytes` so the scorecard can gate memory on real
+    // live allocation instead of sysinfo `peak_rss` (which v0.11.0's mmap read
+    // path inflates ~11×, see cqlite-perf #5). `max_bytes` is the process-global
+    // peak, so this is only meaningful for a single-workload dhat run, e.g.
+    //   cargo run --release --features dhat-heap -- run --workload read.full_scan
+    #[cfg(feature = "dhat-heap")]
+    {
+        let stats = dhat::HeapStats::get();
+        custom.insert("mem.live_heap_bytes".to_string(), stats.max_bytes as f64);
     }
 
     Ok(RunResult {

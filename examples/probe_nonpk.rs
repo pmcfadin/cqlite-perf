@@ -20,10 +20,10 @@ async fn main() -> anyhow::Result<()> {
     };
     let db = ingest(cfg).await.map_err(|e| anyhow::anyhow!("ingest: {e}"))?.database;
     for q in [
-        "SELECT * FROM basic WHERE age = 0",                       // non-PK regular col
-        "SELECT * FROM basic WHERE name = 'name-0'",               // non-PK regular col
-        "SELECT * FROM basic WHERE email = 'u0@perf.test'",        // non-PK regular col
-        "SELECT * FROM basic WHERE id = 'k0000000000000000'",      // PK col
+        "SELECT * FROM perf.basic WHERE age = 0",                       // non-PK regular col
+        "SELECT * FROM perf.basic WHERE name = 'name-0'",               // non-PK regular col
+        "SELECT * FROM perf.basic WHERE email = 'u0@perf.test'",        // non-PK regular col
+        "SELECT * FROM perf.basic WHERE id = 'k0000000000000000'",      // PK col
     ] { println!("{:55} => {} rows", q, count(&db, q).await); }
     Ok(())
 }
