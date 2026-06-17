@@ -1,0 +1,1 @@
+live-heap peak 194MB vs RSS 2108MB (11x); result fully materialized (100k row + 300k cell allocs live); 0 leak
