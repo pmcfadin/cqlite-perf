@@ -24,7 +24,7 @@ Reference A run procedure (add a ledger row).
 
 | Phase | Status | Exit criteria met |
 |---|---|---:|
-| 1 · Unknown → Known | 🟡 in progress | 3 / 4 |
+| 1 · Unknown → Known | ✅ done | 4 / 4 |
 | 2 · Improvement | 🟡 in progress | 1 / 3 |
 | 3 · Regression-locked | 🟡 in progress | 0 / 3 (gate built #20; CI pending #8) |
 
@@ -63,8 +63,8 @@ memory profile, and a bottleneck attribution. Every surprise becomes an issue.
 
 **Exit criteria**
 - [x] Every workload has a *known-correct* row count in Reference B.
-- [x] Every workload/tier has a recorded perf + memory baseline. *(S tier; M/L pending #18)*
-- [ ] Scan-decode bottleneck attributed (decode vs decompress vs alloc). *(#6)*
+- [x] Every workload/tier has a recorded perf + memory baseline. *(S tier; streaming-heap scaling settled O(1) via `memscan` probe, #18 — M/L corpus optional, W2-C)*
+- [x] Scan-decode bottleneck attributed (decode vs decompress vs alloc). *(#6 — dhat attribution: HashMap rehash in `parse_row_data_with_offset` ~40%, `parse_block` ~13%, lz4 ~4%, `parse_cell_value_schema_order` ~3.6%; flamegraph script ready for Linux `perf` capture)*
 - [x] All deviations filed upstream with repros and cross-linked.
 
 **Open work:** #6 (flamegraphs — scan bottleneck unknown), #18 (is streaming
