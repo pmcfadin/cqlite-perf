@@ -26,7 +26,7 @@ Reference A run procedure (add a ledger row).
 |---|---|---:|
 | 1 · Unknown → Known | ✅ done | 4 / 4 |
 | 2 · Improvement | 🟡 in progress | 1 / 3 |
-| 3 · Regression-locked | 🟡 in progress | 0 / 3 (gate built #20; CI pending #8) |
+| 3 · Regression-locked | 🟡 in progress | 2 / 3 (correctness gate live in CI #8; perf-regression enforcement pending) |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done.
 
@@ -119,12 +119,13 @@ correctness + performance regression and fails loudly on any backslide.
   cross-version compare.
 
 **Exit criteria**
-- [ ] Correctness mismatch fails CI (non-zero exit), not a human reading a table.
-- [ ] Perf regression beyond budget fails CI against the recorded baseline.
-- [ ] Every engine bump runs the gate automatically.
+- [x] Correctness mismatch fails CI (non-zero exit), not a human reading a table. *(`.github/workflows/ci.yml` — `cqlite-perf validate` is a hard gate; verified green on PR #22, runs 27667412017 + 27667818006)*
+- [ ] Perf regression beyond budget fails CI against the recorded baseline. *(baseline + compare step shipped; `scorecard --enforce` gating still pending — goals are calibrated but `enforce = false`)*
+- [x] Every engine bump runs the gate automatically. *(ci.yml fires on `pull_request` + `push: master`; an engine bump is a Cargo.toml/Cargo.lock change that lands that way)*
 
-**Open work:** asserted correctness gate *(to file)*, enforce calibrated goals
-(after #19), #8 (CI + cross-version + Linux baseline runner).
+**Open work:** flip calibrated goals to `enforce = true` + add `scorecard --enforce`
+to the perf job so a regression beyond budget fails CI (the one remaining Phase 3
+criterion). Flamegraph SVG capture on a privileged Linux runner (#6, script ready).
 
 ---
 ---
