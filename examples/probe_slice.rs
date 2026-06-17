@@ -1,6 +1,9 @@
-//! Throwaway probe (issue #11): which clustering-slice query forms does
-//! cqlite-core v0.9.2 actually return rows for? Ingests the wide_rows corpus
-//! and prints row counts for several WHERE shapes. Not part of the harness.
+//! Clustering-slice repro. As of cqlite v0.11.0 the partition restriction
+//! (`pk = ?`) works (#586 fixed), but clustering-key *inequality* bounds
+//! (`ck >= ?`, `ck < ?`, `ck > ?`) are ignored — they return the whole
+//! partition (1000 rows here) instead of the slice. Only `BETWEEN` is honored
+//! (200 rows). Ingests the wide_rows corpus and prints row counts per WHERE
+//! shape. Run: `cargo run --example probe_slice`.
 use cqlite_core::ingestion::{ingest, IngestionConfig};
 use cqlite_core::query::result::StreamingConfig;
 use cqlite_core::{Config, Database};
@@ -41,12 +44,12 @@ async fn main() -> anyhow::Result<()> {
     let db = ingest(cfg).await.map_err(|e| anyhow::anyhow!("ingest: {e}"))?.database;
 
     for q in [
-        "SELECT * FROM wide_rows",
-        "SELECT * FROM wide_rows WHERE pk = 'p0000'",
-        "SELECT * FROM wide_rows WHERE pk = 'p0000' AND ck >= 0 AND ck < 200",
-        "SELECT * FROM wide_rows WHERE pk = 'p0000' AND ck BETWEEN 0 AND 199",
-        "SELECT * FROM wide_rows WHERE pk = 'p0000' AND ck < 200",
-        "SELECT * FROM wide_rows WHERE pk = 'p0000' AND ck >= 800",
+        "SELECT * FROM perf.wide_rows",
+        "SELECT * FROM perf.wide_rows WHERE pk = 'p0000'",
+        "SELECT * FROM perf.wide_rows WHERE pk = 'p0000' AND ck >= 0 AND ck < 200",
+        "SELECT * FROM perf.wide_rows WHERE pk = 'p0000' AND ck BETWEEN 0 AND 199",
+        "SELECT * FROM perf.wide_rows WHERE pk = 'p0000' AND ck < 200",
+        "SELECT * FROM perf.wide_rows WHERE pk = 'p0000' AND ck >= 800",
     ] {
         println!("{:60} => {}", q, count(&db, q).await);
     }

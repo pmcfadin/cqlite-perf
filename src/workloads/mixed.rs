@@ -14,9 +14,11 @@
 //!   `read.p99_us` hold, and does the writer cohort keep up (`write.ops_per_sec`
 //!   vs `write.target_ops_per_sec`).
 //!
-//! Readers use a full scan (`read.full_scan`), which works in v0.10.0 — NOT
-//! `point_lookup`, which is blocked by the TEXT-PK bug (cqlite #586 / harness
-//! #13). Writers use WAL-off engines so the write load is CPU/flush pressure
+//! Readers use a full scan (`read.full_scan`) to apply steady decode pressure
+//! that competes with the write load. (`point_lookup` is now correct as of
+//! cqlite v0.11.0 — #586 fixed — but each lookup is still a full scan with
+//! residual filtering, so a plain scan is the cleaner read-load generator.)
+//! Writers use WAL-off engines so the write load is CPU/flush pressure
 //! that competes with scan decode. Run mixed workloads with `--warmup 0` (the
 //! open-loop schedule starts at the measurement, and there is no per-op state to
 //! prime).
@@ -42,7 +44,9 @@ const WRITERS: usize = 2;
 /// question is whether the *reads* hold up at this sustained write rate.
 const OPEN_LOOP_TARGET_RATE: f64 = 100_000.0;
 /// Read corpus the scanners run over (must exist locally; the read suite uses it).
-const READ_TABLE: &str = "basic";
+/// Keyspace-qualified: cqlite v0.11.0 (VG7, #680) keys table identity by
+/// (keyspace, table), so the query path needs `perf.basic`, not `basic`.
+const READ_TABLE: &str = "perf.basic";
 const READ_SCHEMA: &str = "basic";
 const MANIFESTS_DIR: &str = "datasets/manifests";
 

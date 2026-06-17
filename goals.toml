@@ -27,13 +27,42 @@ target   = 500                    # 500 µs — PLACEHOLDER, calibrate
 workload = "read.point_lookup"
 enforce  = false
 
+# Memory goals — RETARGETED from dhat data (cqlite-perf #5, 2026-06-16).
+# A full read.full_scan of the 100k-row basic S corpus measured:
+#   live-heap high-water (dhat t-gmax) = 194 MB  ← the real bound
+#   sysinfo peak_rss                   = 2108 MB ← ~11x inflated by mmap (cqlite
+#                                                  #589) + allocator retention
+# So the engine IS bounded (returns to ~0, no leak) but the bound is O(rows
+# materialized), not corpus bytes — execute_streaming holds the whole result.
+#
+# Enforceable memory goal gates on LIVE HEAP, populated only when built with
+# `--features dhat-heap` (NO-DATA on a normal run — run a single-workload dhat
+# build to evaluate it).
 [[goal]]
-name     = "streaming scan stays memory-bounded"
+name     = "streaming scan live heap bounded (S tier)"
+metric   = "custom.mem.live_heap_bytes"
+op       = "<="
+target   = 268435456              # 256 MB = 194 MB measured + ~30% margin
+workload = "read.full_scan"
+schema   = "basic"
+tier     = "S"
+enforce  = false                  # only has data under the dhat-heap build
+
+# peak_rss kept as an INFORMATIONAL ceiling only — it counts reclaimable mmap +
+# allocator pages, so it is not a fair "memory-bounded" gate. Loose bound just
+# flags a gross blow-up; never enforce.
+[[goal]]
+name     = "streaming scan peak RSS (informational)"
 metric   = "resource.peak_rss_bytes"
 op       = "<="
-target   = 134217728              # 128 MB (SPEC §7)
+target   = 3221225472             # 3 GB — observed ~2.1 GB; flag only if it balloons
 workload = "read.full_scan"
-enforce  = false                  # observed 274 MB — track, don't gate yet
+enforce  = false
+
+# NORTH-STAR (not a goal entry): live heap <= 128 MB at S tier. Unreachable while
+# execute_streaming materializes the full result; requires upstream incremental
+# streaming on the read path (cqlite #790; cf. the write-path merge #754).
+# Tracked, not gated.
 
 [[goal]]
 name     = "write ingest throughput (WAL-on)"

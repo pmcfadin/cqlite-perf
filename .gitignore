@@ -10,3 +10,6 @@
 
 # cargo backups
 *.orig
+
+# dhat working artifact (curated copies live in profiles/)
+/dhat-heap.json
