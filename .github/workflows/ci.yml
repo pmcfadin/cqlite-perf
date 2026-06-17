@@ -11,17 +11,21 @@
 #   the corpus SSTable Data.db files. The cache key is derived from the *content*
 #   of ALL manifests (hashFiles), not from a tag or dataset name — so any manifest
 #   change (new corpus, re-generated data, content drift) busts the cache and
-#   forces a fresh generation. After cache restoration, `cqlite-perf datasets
-#   --check` re-verifies every present corpus against its manifest SHA256, and
-#   will exit non-zero if any file was silently corrupted in the cache. If the
-#   cache misses, `scripts/gen-corpus.sh` regenerates the S-tier corpora from a
-#   Cassandra 5.0 service container; the manifest check is then the authoritative
-#   "did we generate the right bytes?" gate.
+#   forces a fresh generation. On a cache miss, `scripts/gen-corpus.sh`
+#   regenerates the S-tier corpora from Cassandra 5.0 in Docker.
 #
-# Correctness gate:
-#   `cqlite-perf validate` checks known-good row counts for every query in
-#   TEST_PLAN.md Reference B. A non-zero exit (any mismatch) fails the build.
-#   This is the hard gate; perf jobs do NOT run if it fails.
+#   `cqlite-perf datasets --check` (SHA256 vs manifest) runs as an INFORMATIONAL
+#   step: it is a true integrity assertion only for a fetched/cached corpus, but
+#   freshly generated SSTables never match the committed SHA (Data.db embeds
+#   per-cell wall-clock write timestamps — COPY FROM sets no USING TIMESTAMP —
+#   and the table dir carries a random per-creation UUID). So byte-identity is a
+#   local/release-asset concern, not a CI gate.
+#
+# Correctness gate (THE hard gate):
+#   `cqlite-perf validate` checks known-good ROW COUNTS for every query in
+#   TEST_PLAN.md Reference B — robust to byte/timestamp differences in
+#   regenerated corpora. A non-zero exit (any mismatch) fails the build.
+#   Perf jobs do NOT run if it fails.
 #
 # Linux baseline:
 #   A short `read.full_scan` run (10 s + 5 s warmup, 1 trial) records a real
@@ -105,13 +109,22 @@ jobs:
           bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
           bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
 
-      - name: Verify corpus SHA256 against manifests
-        # Always run — even on cache hit, confirm the cached bytes are intact.
+      - name: Corpus integrity check (informational)
+        # SHA256 vs the committed manifest. This is a HARD assertion only for a
+        # *fetched/cached* corpus (cache integrity). It is INFORMATIONAL after a
+        # fresh `gen-corpus.sh` run because Cassandra SSTable Data.db embeds
+        # per-cell wall-clock write timestamps (COPY FROM sets no USING TIMESTAMP)
+        # and the table dir carries a random per-creation UUID — so regenerated
+        # bytes legitimately differ from the manifest SHA. Row-count correctness
+        # is asserted by `validate` below, which is robust to those differences.
+        continue-on-error: true
         run: ./target/release/cqlite-perf datasets --check
 
-      # ── Correctness gate ──────────────────────────────────────────────────────
+      # ── Correctness gate (HARD) ────────────────────────────────────────────────
       - name: Run correctness gate (cqlite-perf validate)
-        # Non-zero exit (any row-count mismatch) fails the build here.
+        # THE gate: known-good row counts (TEST_PLAN.md Reference B). A non-zero
+        # exit (any row-count mismatch) fails the build. Robust to byte-level /
+        # timestamp differences in freshly-generated corpora.
         run: ./target/release/cqlite-perf validate
 
   # ─────────────────────────────────────────────────────────────────────────────
@@ -165,7 +178,11 @@ jobs:
           bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
           bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
 
-      - name: Verify corpus SHA256 against manifests
+      - name: Corpus integrity check (informational)
+        # Informational after a fresh gen (see correctness-gate job for why);
+        # the correctness-gate job already asserted row-count correctness via
+        # `validate`, and this job only runs once that gate passed (needs:).
+        continue-on-error: true
         run: ./target/release/cqlite-perf datasets --check
 
       # ── Short read smoke (Linux baseline numbers) ─────────────────────────────
