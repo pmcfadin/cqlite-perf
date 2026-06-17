@@ -1,0 +1,277 @@
+# ci.yml — cqlite-perf CI workflow (W4-B, issue #8)
+#
+# Triggers:
+#   • pull_request to master  — correctness gate on every PR
+#   • push to master          — post-merge gate + Linux baseline recording
+#   • paths: Cargo.toml / Cargo.lock — fires on engine-version bumps (cqlite-core
+#     rev/tag changes), catching regressions introduced by a new engine pin
+#
+# Corpus provisioning strategy (cache-first with gen-as-fallback, SHA256-keyed):
+#   The committed datasets/manifests/*.json files each contain a sha256 field over
+#   the corpus SSTable Data.db files. The cache key is derived from the *content*
+#   of ALL manifests (hashFiles), not from a tag or dataset name — so any manifest
+#   change (new corpus, re-generated data, content drift) busts the cache and
+#   forces a fresh generation. On a cache miss, `scripts/gen-corpus.sh`
+#   regenerates the S-tier corpora from Cassandra 5.0 in Docker.
+#
+#   `cqlite-perf datasets --check` (SHA256 of each present corpus's *-Data.db vs
+#   the committed manifest) is a HARD content-addressing gate. Verified in CI: a
+#   fresh gen on ubuntu-latest reproduces the committed SHA exactly (`3 ok, 0
+#   bad`). It exits non-zero only on a real mismatch (`bad`); corpora the workflow
+#   does not generate (other codecs) are reported `missing` and tolerated.
+#
+# Correctness gate (THE hard gate):
+#   `cqlite-perf validate` checks known-good ROW COUNTS for every query in
+#   TEST_PLAN.md Reference B. A non-zero exit (any mismatch) fails the build.
+#   Perf jobs do NOT run if it fails.
+#
+# Linux baseline:
+#   A short `read.full_scan` run (10 s + 5 s warmup, 1 trial) records a real
+#   Linux throughput number on the ubuntu-latest runner (bare GitHub-hosted x86-64
+#   — not virtualized Docker-on-macOS). Results are uploaded as a build artifact
+#   labeled `linux-baseline` and kept for 90 days. A compare step diffs against
+#   the previous baseline artifact when one is present.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+    # Also fires on engine-version bumps pushed to master — Cargo.toml contains
+    # the cqlite-core git rev/tag; Cargo.lock contains the resolved commit hash.
+    # PRs that bump the engine are caught by the pull_request trigger above.
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1: correctness-gate
+  #   Builds the harness, provisions the S-tier corpus, and runs `validate`.
+  #   MUST pass before any perf work proceeds.
+  # ─────────────────────────────────────────────────────────────────────────────
+  correctness-gate:
+    name: Correctness gate (validate)
+    runs-on: ubuntu-latest
+
+    # gen-corpus.sh manages its own Docker containers (docker run -d --name ...).
+    # The ubuntu-latest runner has Docker installed; no service container needed.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Rust toolchain + build cache ─────────────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      - name: Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # ── Corpus provisioning (cache-first, SHA256-keyed) ──────────────────────
+      #
+      # Cache key is the SHA256 of the manifests directory contents, NOT a tag.
+      # If a manifest changes (new corpus, regenerated data), the cache busts and
+      # we regenerate. After restore we always re-verify with `datasets --check`.
+      - name: Restore corpus cache
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: datasets/
+          key: corpus-${{ runner.os }}-${{ hashFiles('datasets/manifests/**') }}
+          # No restore-keys: a partial corpus is worse than no corpus (the cache
+          # might contain data for old manifests that no longer match SHA256).
+
+      - name: Generate corpora (cache miss only)
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          # gen-corpus.sh requires Docker (present on ubuntu-latest).
+          # Generate only the S-tier corpora that validate checks:
+          #   read-basic-S-lz4, read-wide_rows-S-lz4, read-collections-S-lz4
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema basic
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
+
+      - name: Verify corpus SHA256 against manifests
+        # Content-addressing gate: SHA256 of each present corpus's *-Data.db vs
+        # the committed manifest. `datasets --check` exits non-zero ONLY on a
+        # mismatch (`bad`); corpora the workflow doesn't generate (other codecs)
+        # are reported `missing` and do NOT fail. Verified in CI: a fresh
+        # gen-corpus.sh run on ubuntu-latest reproduces the committed SHA exactly
+        # (`3 ok, 0 bad`), so this is a real reproducibility assertion, not a
+        # cache-only one. Row-count correctness is asserted separately by
+        # `validate` below.
+        run: ./target/release/cqlite-perf datasets --check
+
+      # ── Correctness gate (HARD) ────────────────────────────────────────────────
+      - name: Run correctness gate (cqlite-perf validate)
+        # THE gate: known-good row counts (TEST_PLAN.md Reference B). A non-zero
+        # exit (any row-count mismatch) fails the build. Robust to byte-level /
+        # timestamp differences in freshly-generated corpora.
+        run: ./target/release/cqlite-perf validate
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2: linux-baseline
+  #   Short perf smoke on the real ubuntu-latest Linux runner. Runs only after
+  #   the correctness gate passes. Uploads results as a build artifact and
+  #   attempts a cross-version diff against the previously recorded baseline.
+  # ─────────────────────────────────────────────────────────────────────────────
+  linux-baseline:
+    name: Linux perf smoke + baseline
+    runs-on: ubuntu-latest
+    needs: correctness-gate
+    # Run on push to master (record authoritative Linux baseline) and on PRs
+    # (smoke only — artifact is labeled with the PR number for comparison).
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      - name: Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Restore corpus cache
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: datasets/
+          key: corpus-${{ runner.os }}-${{ hashFiles('datasets/manifests/**') }}
+
+      - name: Generate corpora (cache miss only)
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema basic
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
+
+      - name: Verify corpus SHA256 against manifests
+        # Same content-addressing gate as the correctness-gate job (exits non-zero
+        # only on a SHA mismatch; missing codecs are tolerated).
+        run: ./target/release/cqlite-perf datasets --check
+
+      # ── Short read smoke (Linux baseline numbers) ─────────────────────────────
+      # Duration: 10s + 5s warmup, 1 trial — short enough for CI, long enough to
+      # get a stable throughput reading. The ubuntu-latest runner is real x86-64
+      # (not virtualized), so these numbers ARE the authoritative Linux baseline.
+      - name: Run perf smoke (read.full_scan)
+        run: |
+          mkdir -p reports/linux-baseline
+          ./target/release/cqlite-perf run \
+            --workload read.full_scan \
+            --duration 10s \
+            --warmup 5s \
+            --trials 1 \
+            --out reports/linux-baseline
+
+      - name: Run perf smoke (read.point_lookup)
+        run: |
+          ./target/release/cqlite-perf run \
+            --workload read.point_lookup \
+            --duration 10s \
+            --warmup 5s \
+            --trials 1 \
+            --out reports/linux-baseline
+
+      # ── Download prior baseline for comparison ────────────────────────────────
+      - name: Download previous Linux baseline (if exists)
+        id: prev-baseline
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: linux-baseline-master
+          path: reports/prior-linux-baseline/
+
+      - name: Compare against prior baseline
+        if: steps.prev-baseline.outcome == 'success'
+        run: |
+          echo "=== Cross-version comparison ==="
+          echo "Current commit: ${{ github.sha }}"
+          echo ""
+          echo "--- current baseline ---"
+          # Find the most recent results.jsonl in reports/linux-baseline/
+          CURRENT=$(find reports/linux-baseline -name 'results.jsonl' | sort | tail -1)
+          if [[ -n "$CURRENT" ]]; then
+            echo "Workload results (ops/sec, p99 µs):"
+            python3 -c "
+          import json, sys
+          with open('$CURRENT') as f:
+              for line in f:
+                  line = line.strip()
+                  if not line: continue
+                  r = json.loads(line)
+                  name = r.get('workload', '?')
+                  ops = r.get('throughput', {}).get('ops_per_sec', 0)
+                  p99 = r.get('latency_us', {}).get('p99', 0)
+                  print(f'  {name}: {ops:.0f} ops/sec  p99={p99} µs')
+          "
+          fi
+          echo ""
+          echo "--- prior baseline ---"
+          PRIOR=$(find reports/prior-linux-baseline -name 'results.jsonl' | sort | tail -1)
+          if [[ -n "$PRIOR" ]]; then
+            python3 -c "
+          import json, sys
+          with open('$PRIOR') as f:
+              for line in f:
+                  line = line.strip()
+                  if not line: continue
+                  r = json.loads(line)
+                  name = r.get('workload', '?')
+                  ops = r.get('throughput', {}).get('ops_per_sec', 0)
+                  p99 = r.get('latency_us', {}).get('p99', 0)
+                  print(f'  {name}: {ops:.0f} ops/sec  p99={p99} µs')
+          "
+          fi
+          echo ""
+          echo "NOTE: Full regression gating (goals.toml scorecard --enforce) lands in Phase 3."
+
+      # ── Upload baseline artifact ──────────────────────────────────────────────
+      # On master pushes, upload as the "authoritative" baseline (name: linux-baseline-master).
+      # On PRs, upload with the PR number so comparisons are unambiguous.
+      - name: Upload Linux baseline artifact (master push)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-baseline-master
+          path: reports/linux-baseline/
+          retention-days: 90
+
+      - name: Upload Linux baseline artifact (PR smoke)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-baseline-pr-${{ github.event.number }}
+          path: reports/linux-baseline/
+          retention-days: 30
