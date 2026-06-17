@@ -52,6 +52,17 @@ enum Command {
     /// re-running — e.g. after several `run` invocations appended to one report
     /// dir (SPEC §11).
     Report(ReportArgs),
+    /// Correctness gate: assert known-good row counts against the local corpora
+    /// (TEST_PLAN.md Reference B). Exits non-zero on any mismatch. Run this
+    /// before perf when validating a new engine version.
+    Validate(ValidateArgs),
+}
+
+#[derive(Parser)]
+struct ValidateArgs {
+    /// Root holding the read corpora (read-<schema>-S-lz4 subdirs).
+    #[arg(long, default_value = "datasets")]
+    datasets_root: PathBuf,
 }
 
 #[derive(Parser)]
@@ -164,7 +175,115 @@ async fn main() -> anyhow::Result<()> {
         Command::Datasets(args) => datasets_cmd(args),
         Command::Scorecard(args) => scorecard_cmd(args),
         Command::Report(args) => report_cmd(args),
+        Command::Validate(args) => validate_cmd(args).await,
     }
+}
+
+/// Correctness gate (TEST_PLAN.md Reference B): ingest each local corpus and
+/// assert the known-good row counts. A present corpus that returns the wrong
+/// count fails the run (non-zero exit); an absent corpus is skipped with a
+/// warning so the gate still runs in a partial dev checkout.
+async fn validate_cmd(args: ValidateArgs) -> anyhow::Result<()> {
+    use cqlite_core::ingestion::{ingest, IngestionConfig};
+    use cqlite_core::query::result::StreamingConfig;
+    use cqlite_core::{Config, Database};
+
+    async fn count(db: &Database, q: &str) -> anyhow::Result<i64> {
+        let mut it = db.execute_streaming(q, StreamingConfig::default()).await?;
+        let mut n = 0i64;
+        while let Some(r) = it.next_async().await {
+            r.map_err(|e| anyhow::anyhow!("row error after {n}: {e}"))?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    // (schema file, corpus subdir, [(query, expected_rows, guards)]).
+    let corpora: &[(&str, &str, &[(&str, i64, &str)])] = &[
+        (
+            "schemas/basic.cql",
+            "read-basic-S-lz4",
+            &[
+                ("SELECT * FROM perf.basic", 100_000, "scan"),
+                ("SELECT * FROM perf.basic WHERE id = 'k0000000000000000'", 1, "TEXT PK eq (#586)"),
+                ("SELECT * FROM perf.basic LIMIT 3", 3, "LIMIT"),
+                ("SELECT * FROM perf.basic WHERE age = 0", 834, "regular-col filter"),
+                ("SELECT * FROM perf.basic WHERE name = 'name-0'", 1, "regular-col eq"),
+            ],
+        ),
+        (
+            "schemas/wide_rows.cql",
+            "read-wide_rows-S-lz4",
+            &[
+                ("SELECT * FROM perf.wide_rows WHERE pk = 'p0000'", 1000, "partition restriction"),
+                ("SELECT * FROM perf.wide_rows WHERE pk = 'p0000' AND ck >= 0 AND ck < 200", 200, "clustering bounds (#788)"),
+                ("SELECT * FROM perf.wide_rows WHERE pk = 'p0000' AND ck < 200", 200, "open lower bound (#788)"),
+                ("SELECT * FROM perf.wide_rows WHERE pk = 'p0000' AND ck >= 800", 200, "open upper bound (#788)"),
+                ("SELECT * FROM perf.wide_rows WHERE pk = 'p0000' AND ck BETWEEN 0 AND 199", 200, "inclusive range"),
+            ],
+        ),
+        (
+            "schemas/collections.cql",
+            "read-collections-S-lz4",
+            &[("SELECT * FROM perf.collections", 100_000, "scan")],
+        ),
+    ];
+
+    let root = std::env::current_dir()?;
+    let mut checked = 0u32;
+    let mut failed = 0u32;
+    let mut skipped = 0u32;
+
+    for (schema, subdir, checks) in corpora {
+        let data_dir = args.datasets_root.join(subdir);
+        if !data_dir.exists() {
+            println!("⊘ {subdir}: corpus absent — skipped");
+            skipped += 1;
+            continue;
+        }
+        let cfg = IngestionConfig {
+            schema_paths: vec![root.join(schema)],
+            data_dir: data_dir.clone(),
+            version_hint: Some("5.0".to_string()),
+            core_config: Config::default(),
+            table_directory_filter: None,
+        };
+        let db = match ingest(cfg).await {
+            Ok(r) => r.database,
+            Err(e) => {
+                println!("✗ {subdir}: ingest failed: {e}");
+                failed += 1;
+                continue;
+            }
+        };
+        println!("• {subdir}");
+        for (q, expected, guards) in *checks {
+            checked += 1;
+            match count(&db, q).await {
+                Ok(got) if got == *expected => {
+                    println!("  ✅ {got:>6} (= {expected})  {guards}");
+                }
+                Ok(got) => {
+                    failed += 1;
+                    println!("  ❌ {got:>6} (≠ {expected})  {guards}  :: {q}");
+                }
+                Err(e) => {
+                    failed += 1;
+                    println!("  ❌ ERROR {guards}  :: {q}  :: {e}");
+                }
+            }
+        }
+    }
+
+    println!("\n{checked} checks, {failed} failed, {skipped} corpus(es) skipped");
+    if failed > 0 {
+        anyhow::bail!("correctness gate FAILED — {failed} mismatch(es)");
+    }
+    if checked == 0 {
+        anyhow::bail!("no corpora present — nothing validated (run `cqlite-perf gen` first)");
+    }
+    println!("✓ correctness gate passed");
+    Ok(())
 }
 
 /// Re-render SUMMARY.md + SCORECARD.md from an existing results.jsonl (SPEC §11).

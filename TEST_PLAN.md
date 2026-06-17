@@ -26,7 +26,7 @@ Reference A run procedure (add a ledger row).
 |---|---|---:|
 | 1 · Unknown → Known | 🟡 in progress | 3 / 4 |
 | 2 · Improvement | 🟡 in progress | 1 / 3 |
-| 3 · Regression-locked | ⬜ not started | 0 / 3 |
+| 3 · Regression-locked | 🟡 in progress | 0 / 3 (gate built #20; CI pending #8) |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done.
 
@@ -108,10 +108,9 @@ recalibration), #16 (re-pin to v0.12.0 + re-baseline), #7 (bindings overhead).
 correctness + performance regression and fails loudly on any backslide.
 
 **Activities**
-- **Asserted correctness gate** — convert Reference B from *printed* counts to a
-  machine-checked gate (`cqlite-perf validate` / `cargo test`) that exits
-  non-zero on any row-count mismatch. *(No issue yet — this is the next build,
-  and it's what would have caught #788 before release.)*
+- **Asserted correctness gate** — ✅ shipped (#20): `cqlite-perf validate`
+  asserts Reference B and exits non-zero on any mismatch. Still needs to *run in
+  CI* (#8) to fully close the exit criterion below.
 - **Baseline-relative perf gates** — enforce throughput/latency within X% of the
   recorded baseline (the scorecard already supports `--baseline` +
   `regression_max_pct`; flip `enforce = true` on calibrated goals).
@@ -139,7 +138,8 @@ The mechanisms every phase uses.
 0. **Pin.** Tag → `Cargo.toml` `tag = "vX.Y.Z"`; interim commit → `rev = "<sha>"`.
    `cargo update -p cqlite-core`. Set `runner::CQLITE_VERSION`.
 1. **Build gate.** `cargo build --release` and `--features dhat-heap` both clean.
-2. **Correctness gate (blocking).** Probe suite vs Reference B. Mismatch → STOP, triage.
+2. **Correctness gate (blocking).** `cqlite-perf validate` — asserts the
+   Reference B row counts, non-zero exit on any mismatch → STOP, triage.
 3. **Smoke.** `cqlite-perf run --config configs/read-suite.toml` (1 trial); every
    read workload emits its expected per-op rows.
 4. **Full perf run.** Reads via `configs/read-suite.toml`; write+mixed via
@@ -168,7 +168,9 @@ The mechanisms every phase uses.
 Read-suite per-op rows (rows ÷ ops in `results.jsonl`): full_scan 100000;
 point_lookup 1; clustering_slice 200; type_heavy 100000; wide_partition 100000.
 
-> Today these are **printed, not asserted** — Phase 3's correctness gate fixes that.
+> Asserted by **`cqlite-perf validate`** (#20) — ingests each present corpus,
+> checks these counts, and exits non-zero on any mismatch. Absent corpora are
+> skipped with a warning.
 
 ## Reference C — Measurement protocol (clean room)
 
