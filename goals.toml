@@ -142,3 +142,32 @@ metric             = "throughput.rows_per_sec"
 regression_max_pct = 10.0         # fail if >10% worse than baseline
 workload           = "read.full_scan"
 enforce            = false
+
+# ── Phase 3 enforced regression gates (CI-blocking) ─────────────────────────
+#
+# These two goals gate CI via `scorecard --enforce`. They are BASELINE-RELATIVE
+# (regression_max_pct), not absolute, because GitHub-hosted ubuntu-latest runners
+# are noisy (~±10–15% run-to-run); a 30% budget absorbs that noise while still
+# catching real regressions. The baseline is the prior `linux-baseline-master`
+# artifact downloaded in the linux-baseline CI job; when no prior artifact exists
+# (first run) both goals yield Status::NoData → not a failure.
+#
+# Measured 2026-06-16 on cqlite main@9054734, ubuntu-equivalent (macOS proxy):
+#   read.full_scan   throughput.rows_per_sec ≈ 332,351 rows/s
+#   read.point_lookup latency_us.p99         ≈ 401,151 µs
+
+[[goal]]
+name               = "scan throughput regression vs baseline"
+metric             = "throughput.rows_per_sec"
+regression_max_pct = 30.0         # GH runners are noisy; 30% budget absorbs ~±15% noise while catching real regressions; 2026-06-16 measured ~332,351 rows/s
+workload           = "read.full_scan"
+schema             = "basic"
+tier               = "S"
+enforce            = true
+
+[[goal]]
+name               = "point lookup p99 regression vs baseline"
+metric             = "latency_us.p99"
+regression_max_pct = 30.0         # GH runners are noisy; 30% budget absorbs ~±15% noise while catching real regressions; 2026-06-16 measured ~401,151 µs
+workload           = "read.point_lookup"
+enforce            = true

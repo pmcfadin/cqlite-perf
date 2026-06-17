@@ -138,6 +138,9 @@ jobs:
     # Run on push to master (record authoritative Linux baseline) and on PRs
     # (smoke only — artifact is labeled with the PR number for comparison).
     if: github.event_name == 'push' || github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      actions: read   # required for cross-run gh run download
 
     steps:
       - name: Checkout
@@ -205,16 +208,34 @@ jobs:
             --out reports/linux-baseline
 
       # ── Download prior baseline for comparison ────────────────────────────────
-      - name: Download previous Linux baseline (if exists)
+      # actions/download-artifact@v4 only retrieves artifacts from the CURRENT run;
+      # linux-baseline-master is produced by master-push runs (different runs).
+      # Use the gh CLI (preinstalled on ubuntu-latest) to fetch the artifact from
+      # the latest SUCCESSFUL master CI run other than the current one.
+      - name: Download previous Linux baseline (latest master run)
         id: prev-baseline
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: linux-baseline-master
-          path: reports/prior-linux-baseline/
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(gh run list --workflow=ci.yml --branch master --status success -L 10 \
+            --json databaseId -q '.[].databaseId' \
+            | grep -v "^${{ github.run_id }}$" | head -1 || true)
+          if [[ -z "${RUN_ID:-}" ]]; then
+            echo "No prior master baseline run found; skipping regression gate."
+            echo "found=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mkdir -p reports/prior-linux-baseline
+          if gh run download "$RUN_ID" -n linux-baseline-master -D reports/prior-linux-baseline; then
+            echo "Downloaded baseline from master run $RUN_ID"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No linux-baseline-master artifact on run $RUN_ID; skipping regression gate."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Compare against prior baseline
-        if: steps.prev-baseline.outcome == 'success'
+        if: steps.prev-baseline.outputs.found == 'true'
         run: |
           echo "=== Cross-version comparison ==="
           echo "Current commit: ${{ github.sha }}"
@@ -254,8 +275,32 @@ jobs:
                   print(f'  {name}: {ops:.0f} ops/sec  p99={p99} µs')
           "
           fi
-          echo ""
-          echo "NOTE: Full regression gating (goals.toml scorecard --enforce) lands in Phase 3."
+
+      # ── Regression gate (enforced) ────────────────────────────────────────────
+      # Uses scorecard --enforce to fail the job if any enforced goal regresses
+      # beyond its budget. Both smoke workloads (read.full_scan and
+      # read.point_lookup) append to the SAME timestamped results.jsonl under
+      # reports/linux-baseline/ (same date + harness version → same subdir), so
+      # the tail -1 file already contains both results. The prior baseline's
+      # equivalent file is located the same way under reports/prior-linux-baseline/.
+      # When no prior artifact exists (first run), regression_max_pct goals yield
+      # Status::NoData → not a failure; the step is a no-op on first run.
+      - name: Regression gate (scorecard --enforce vs prior baseline)
+        if: steps.prev-baseline.outputs.found == 'true'
+        run: |
+          CURRENT=$(find reports/linux-baseline -name 'results.jsonl' | sort | tail -1)
+          PRIOR=$(find reports/prior-linux-baseline -name 'results.jsonl' | sort | tail -1)
+          if [[ -z "$CURRENT" || -z "$PRIOR" ]]; then
+            echo "No results.jsonl found; skipping regression gate."
+            exit 0
+          fi
+          echo "Regression gate: current=$CURRENT  prior=$PRIOR"
+          # --out is omitted: scorecard writes SCORECARD.md next to --results by default.
+          ./target/release/cqlite-perf scorecard \
+            --enforce \
+            --baseline "$PRIOR" \
+            --results "$CURRENT" \
+            --goals goals.toml
 
       # ── Upload baseline artifact ──────────────────────────────────────────────
       # On master pushes, upload as the "authoritative" baseline (name: linux-baseline-master).

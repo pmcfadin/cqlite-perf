@@ -310,3 +310,260 @@ pub fn load_results(path: &Path) -> anyhow::Result<Vec<RunResult>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics::{DatasetInfo, HostInfo, LatencyUs, Resource, Throughput, Variance};
+    use std::collections::BTreeMap;
+
+    /// Build a minimal RunResult fixture for use in scorecard unit tests.
+    fn make_result(
+        workload: &str,
+        schema: &str,
+        tier: &str,
+        rows_per_sec: f64,
+        p99_us: u64,
+    ) -> RunResult {
+        RunResult {
+            workload: workload.to_string(),
+            cqlite_version: "test".to_string(),
+            cqlite_git_sha: None,
+            harness_version: "0.0.0".to_string(),
+            dataset: DatasetInfo {
+                tier: tier.to_string(),
+                rows: 100_000,
+                bytes: 1_000_000,
+                codec: "lz4".to_string(),
+                schema: schema.to_string(),
+            },
+            distribution: "zipfian".to_string(),
+            concurrency: 1,
+            cache: "warm".to_string(),
+            throughput: Throughput {
+                ops_per_sec: rows_per_sec,
+                rows_per_sec,
+                mb_per_sec: None,
+            },
+            latency_us: LatencyUs {
+                p50: p99_us / 2,
+                p90: p99_us,
+                p95: p99_us,
+                p99: p99_us,
+                p999: p99_us * 2,
+                max: p99_us * 3,
+            },
+            resource: Resource {
+                peak_rss_bytes: 100_000_000,
+                cpu_pct_mean: 50.0,
+                alloc_bytes: None,
+                alloc_count: None,
+            },
+            trials: 1,
+            variance: Variance { ops_per_sec_cv: 0.01 },
+            host: HostInfo {
+                cpu: "x86_64".to_string(),
+                cores: 4,
+                ram_gb: 16,
+                os: "linux".to_string(),
+            },
+            duration_secs: 10,
+            warmup_secs: 5,
+            seed: 42,
+            custom: BTreeMap::new(),
+        }
+    }
+
+    /// Build a regression_max_pct goal for testing.
+    fn regression_goal(
+        metric: &str,
+        workload: &str,
+        schema: Option<&str>,
+        tier: Option<&str>,
+        max_pct: f64,
+        enforce: bool,
+    ) -> Goal {
+        Goal {
+            name: format!("test {metric} regression"),
+            metric: metric.to_string(),
+            op: None,
+            target: None,
+            regression_max_pct: Some(max_pct),
+            enforce,
+            workload: Some(workload.to_string()),
+            schema: schema.map(str::to_string),
+            tier: tier.map(str::to_string),
+            codec: None,
+            distribution: None,
+            concurrency: None,
+            cache: None,
+        }
+    }
+
+    // ── throughput regression (higher-is-better) ─────────────────────────────
+
+    #[test]
+    fn throughput_regression_above_budget_is_regressed() {
+        // Baseline: 332,351 rows/s. Actual: 31% below (229,322) → exceeds 30% budget.
+        let baseline_val = 332_351.0_f64;
+        let actual_val = baseline_val * 0.69; // -31%
+        let goal = regression_goal(
+            "throughput.rows_per_sec",
+            "read.full_scan",
+            Some("basic"),
+            Some("S"),
+            30.0,
+            true,
+        );
+        let actual = make_result("read.full_scan", "basic", "S", actual_val, 1_000);
+        let baseline = make_result("read.full_scan", "basic", "S", baseline_val, 1_000);
+
+        let js = judge(&[goal], &[actual], &[baseline]);
+        assert_eq!(js.len(), 1);
+        assert_eq!(js[0].status, Status::Regressed);
+
+        let (failed, enforced_failed) = tally(&js);
+        assert_eq!(failed, 1);
+        assert_eq!(enforced_failed, 1, "enforced goal must count in enforced_failed");
+    }
+
+    #[test]
+    fn throughput_regression_within_budget_is_met() {
+        // Actual is 20% below baseline → within 30% budget.
+        let baseline_val = 332_351.0_f64;
+        let actual_val = baseline_val * 0.80; // -20%
+        let goal = regression_goal(
+            "throughput.rows_per_sec",
+            "read.full_scan",
+            Some("basic"),
+            Some("S"),
+            30.0,
+            true,
+        );
+        let actual = make_result("read.full_scan", "basic", "S", actual_val, 1_000);
+        let baseline = make_result("read.full_scan", "basic", "S", baseline_val, 1_000);
+
+        let js = judge(&[goal], &[actual], &[baseline]);
+        assert_eq!(js[0].status, Status::Met);
+        let (_, enforced_failed) = tally(&js);
+        assert_eq!(enforced_failed, 0);
+    }
+
+    #[test]
+    fn throughput_improvement_is_improved() {
+        // Actual is 20% ABOVE baseline → improvement, not regression.
+        let baseline_val = 332_351.0_f64;
+        let actual_val = baseline_val * 1.20; // +20%
+        let goal = regression_goal(
+            "throughput.rows_per_sec",
+            "read.full_scan",
+            Some("basic"),
+            Some("S"),
+            30.0,
+            true,
+        );
+        let actual = make_result("read.full_scan", "basic", "S", actual_val, 1_000);
+        let baseline = make_result("read.full_scan", "basic", "S", baseline_val, 1_000);
+
+        let js = judge(&[goal], &[actual], &[baseline]);
+        assert_eq!(js[0].status, Status::Improved);
+        let (_, enforced_failed) = tally(&js);
+        assert_eq!(enforced_failed, 0);
+    }
+
+    // ── no-baseline → NoData (not a failure) ─────────────────────────────────
+
+    #[test]
+    fn no_baseline_yields_no_data_not_failure() {
+        // Actual present but no baseline results → NoData; must NOT count as failed.
+        let goal = regression_goal(
+            "throughput.rows_per_sec",
+            "read.full_scan",
+            Some("basic"),
+            Some("S"),
+            30.0,
+            true,
+        );
+        let actual = make_result("read.full_scan", "basic", "S", 332_351.0, 1_000);
+
+        let js = judge(&[goal], &[actual], &[]); // empty baseline
+        assert_eq!(js[0].status, Status::NoData);
+
+        let (failed, enforced_failed) = tally(&js);
+        assert_eq!(failed, 0, "NoData must not be counted as failed");
+        assert_eq!(enforced_failed, 0);
+    }
+
+    // ── latency p99 regression (lower-is-better) ─────────────────────────────
+
+    #[test]
+    fn latency_p99_regression_above_budget_is_regressed() {
+        // Baseline p99: 401,151 µs. Actual: 31% above (525,508 µs) → exceeds 30% budget.
+        let baseline_p99 = 401_151_u64;
+        let actual_p99 = (baseline_p99 as f64 * 1.31).round() as u64; // +31%
+        let goal = regression_goal(
+            "latency_us.p99",
+            "read.point_lookup",
+            None,
+            None,
+            30.0,
+            true,
+        );
+        let actual = make_result("read.point_lookup", "basic", "S", 1.0, actual_p99);
+        let baseline = make_result("read.point_lookup", "basic", "S", 1.0, baseline_p99);
+
+        let js = judge(&[goal], &[actual], &[baseline]);
+        assert_eq!(js[0].status, Status::Regressed, "p99 rise beyond budget must be Regressed");
+
+        let (failed, enforced_failed) = tally(&js);
+        assert_eq!(failed, 1);
+        assert_eq!(enforced_failed, 1);
+    }
+
+    #[test]
+    fn latency_p99_within_budget_is_met() {
+        // Actual p99 is 20% above baseline → within 30% budget.
+        let baseline_p99 = 401_151_u64;
+        let actual_p99 = (baseline_p99 as f64 * 1.20).round() as u64; // +20%
+        let goal = regression_goal(
+            "latency_us.p99",
+            "read.point_lookup",
+            None,
+            None,
+            30.0,
+            true,
+        );
+        let actual = make_result("read.point_lookup", "basic", "S", 1.0, actual_p99);
+        let baseline = make_result("read.point_lookup", "basic", "S", 1.0, baseline_p99);
+
+        let js = judge(&[goal], &[actual], &[baseline]);
+        assert_eq!(js[0].status, Status::Met);
+        let (_, enforced_failed) = tally(&js);
+        assert_eq!(enforced_failed, 0);
+    }
+
+    // ── tally: non-enforced regressions do not count as enforced failures ─────
+
+    #[test]
+    fn non_enforced_regression_not_counted_in_enforced_failed() {
+        let baseline_val = 332_351.0_f64;
+        let actual_val = baseline_val * 0.50; // −50% — would be a regression
+        let goal = regression_goal(
+            "throughput.rows_per_sec",
+            "read.full_scan",
+            Some("basic"),
+            Some("S"),
+            30.0,
+            false, // NOT enforced
+        );
+        let actual = make_result("read.full_scan", "basic", "S", actual_val, 1_000);
+        let baseline = make_result("read.full_scan", "basic", "S", baseline_val, 1_000);
+
+        let js = judge(&[goal], &[actual], &[baseline]);
+        assert_eq!(js[0].status, Status::Regressed);
+
+        let (failed, enforced_failed) = tally(&js);
+        assert_eq!(failed, 1, "non-enforced regression IS a failure in total count");
+        assert_eq!(enforced_failed, 0, "non-enforced regression must NOT count in enforced_failed");
+    }
+}
