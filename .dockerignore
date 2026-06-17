@@ -1,0 +1,24 @@
+# .dockerignore — exclude large / gitignored / build artifacts from Docker context
+# Datasets are bind-mounted at runtime; they must never be baked into the image.
+
+# build artifacts
+target/
+
+# corpus data (gitignored, bind-mounted at runtime)
+datasets/read-*
+datasets/**/
+
+# reports and profiles
+reports/
+profiles/
+
+# git metadata
+.git/
+.gitignore
+
+# CI worktrees and Claude metadata
+.claude/
+
+# local dev files
+*.local
+*.env
