@@ -5,15 +5,15 @@
 # "<metric> <op> <target>" holds. A goal with `regression_max_pct` instead
 # judges against a baseline result rather than an absolute target.
 #
-# Targets below are SEEDED PLACEHOLDERS. The cqlite dev team owns calibrating
-# them — writing down the number is the US-2 deliverable. `enforce = true`
-# means CI gates on the goal (SPEC §14).
+# Targets below are DATA-GROUNDED from the 2026-06-16 baseline run (cqlite main@9054734).
+# Each target has a one-line rationale citing the measured number and margin.
+# `enforce = true` means CI gates on the goal (SPEC §14).
 
 [[goal]]
 name     = "basic scan decode throughput (S tier)"
 metric   = "throughput.rows_per_sec"
 op       = ">="
-target   = 1000000                # 1M rows/sec — PLACEHOLDER, calibrate
+target   = 300000                 # measured 332,351 rows/s on 2026-06-16 (basic/S/lz4, main@9054734); target = floor to 300k (~10% below) as regression floor
 workload = "read.full_scan"
 schema   = "basic"
 tier     = "S"
@@ -23,7 +23,7 @@ enforce  = false
 name     = "point lookup p99 latency"
 metric   = "latency_us.p99"
 op       = "<="
-target   = 500                    # 500 µs — PLACEHOLDER, calibrate
+target   = 450000                 # measured p99=401,151 µs on 2026-06-16 (main@9054734); still a full-scan with residual filtering — no O(log n) partition seek yet (cqlite #755); target = ~450 ms (+~12% margin above measured)
 workload = "read.point_lookup"
 enforce  = false
 
@@ -68,7 +68,7 @@ enforce  = false
 name     = "write ingest throughput (WAL-on)"
 metric   = "throughput.ops_per_sec"
 op       = ">="
-target   = 250                    # PLACEHOLDER, calibrate — fsync-per-write bound
+target   = 200                    # measured 215 ops/s at conc=1 (2026-06-16, main@9054734); fsync-per-write bound; regression floor = floor at ~10% below observed minimum
 workload = "write.ingest"
 enforce  = false
 
@@ -76,7 +76,7 @@ enforce  = false
 name     = "write ingest throughput (WAL-off)"
 metric   = "throughput.ops_per_sec"
 op       = ">="
-target   = 200000                 # PLACEHOLDER, calibrate — memtable-only path
+target   = 230000                 # measured 254,916 ops/s at conc=1 (2026-06-16, main@9054734); memtable-only path; regression floor = ~10% below observed minimum
 workload = "write.ingest_waloff"
 enforce  = false
 
@@ -84,7 +84,7 @@ enforce  = false
 name     = "memtable flush throughput"
 metric   = "custom.flush.mb_per_sec"
 op       = ">="
-target   = 100                    # MB/sec — PLACEHOLDER, calibrate
+target   = 95                     # measured 106.10 MB/s (2026-06-16, main@9054734); regression floor = ~10% below observed
 workload = "write.flush"
 enforce  = false
 
@@ -92,7 +92,7 @@ enforce  = false
 name     = "memtable flush latency"
 metric   = "custom.flush.latency_ms_mean"
 op       = "<="
-target   = 100                    # ms per 8 MB flush — PLACEHOLDER, calibrate
+target   = 85                     # measured 75.40 ms mean (2026-06-16, main@9054734); ceiling = ~13% above observed to absorb I/O jitter
 workload = "write.flush"
 enforce  = false
 
@@ -100,7 +100,7 @@ enforce  = false
 name     = "compaction read-amp reduction"
 metric   = "custom.compaction.read_amp_after"
 op       = "<="
-target   = 1                      # K SSTables merge to 1 — PLACEHOLDER, calibrate
+target   = 1                      # measured read_amp_after=1 (2026-06-16, main@9054734); K SSTables merge to 1 — correct by definition of full compaction
 workload = "write.compaction"
 enforce  = false
 
@@ -108,7 +108,7 @@ enforce  = false
 name     = "compaction cycle wall-time"
 metric   = "custom.compaction.wall_ms_mean"
 op       = "<="
-target   = 500                    # ms to merge K small SSTables — PLACEHOLDER
+target   = 400                    # measured 343.65 ms mean (2026-06-16, main@9054734); ceiling = ~16% above observed to absorb I/O jitter
 workload = "write.compaction"
 enforce  = false
 
@@ -116,7 +116,7 @@ enforce  = false
 name     = "read p99 under write load (read_while_write)"
 metric   = "custom.read.p99_us"
 op       = "<="
-target   = 500000                 # 500 ms full-scan p99 while writers run — PLACEHOLDER
+target   = 275000                 # measured read.p99_us=239,871 µs at conc=8 (2026-06-16, main@9054734); ceiling = ~15% above observed
 workload = "mixed.read_while_write"
 enforce  = false
 
@@ -124,7 +124,7 @@ enforce  = false
 name     = "open-loop writers keep up with target rate"
 metric   = "custom.write.ops_per_sec"
 op       = ">="
-target   = 90000                  # achieved ≥ 90% of the 100k/sec target — PLACEHOLDER
+target   = 90000                  # measured write.ops_per_sec=99,470 at conc=8 (2026-06-16, main@9054734); target = 90% of 100k/s goal rate — intentional design contract
 workload = "mixed.open_loop"
 enforce  = false
 
@@ -132,7 +132,7 @@ enforce  = false
 name     = "read p99 under open-loop write load"
 metric   = "custom.read.p99_us"
 op       = "<="
-target   = 500000                 # 500 ms full-scan p99 — PLACEHOLDER
+target   = 185000                 # measured read.p99_us=157,695 µs at conc=8 (2026-06-16, main@9054734); ceiling = ~17% above observed
 workload = "mixed.open_loop"
 enforce  = false
 
