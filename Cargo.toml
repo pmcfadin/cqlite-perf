@@ -9,10 +9,10 @@ description = "External macro-benchmark harness for CQLite (read/write/mixed sui
 # Standalone git-tag dependency on cqlite — no local paths, fully reproducible.
 # `write-support` is non-default and required by the write suite; the defaults
 # (all-compression, state_machine) cover the read path.
-# INTERIM: pinned to a main commit to validate the #788 (clustering bounds) and
-# #790 (streaming materialization) fixes ahead of a tagged release. Re-pin to
-# `tag = "v0.12.0"` once it's cut (see CLAUDE.md flow).
-cqlite-core = { git = "https://github.com/pmcfadin/cqlite.git", rev = "9054734eec1bb9750cacc54de723311b7edd7663", features = ["write-support", "cli-helpers"] }
+# Tagged release v0.12.0 (cut 2026-06-23). Carries the #788 (clustering bounds)
+# and #790 (streaming materialization) fixes that were validated on the interim
+# main commit, plus #755 (O(log n) partition seek).
+cqlite-core = { git = "https://github.com/pmcfadin/cqlite.git", tag = "v0.12.0", features = ["write-support", "cli-helpers"] }
 
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"

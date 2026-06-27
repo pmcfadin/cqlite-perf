@@ -327,8 +327,8 @@ dependencies = [
 
 [[package]]
 name = "cqlite-core"
-version = "0.11.0"
-source = "git+https://github.com/pmcfadin/cqlite.git?rev=9054734eec1bb9750cacc54de723311b7edd7663#9054734eec1bb9750cacc54de723311b7edd7663"
+version = "0.12.0"
+source = "git+https://github.com/pmcfadin/cqlite.git?tag=v0.12.0#b70a64e87c3273a63db91b4f20b8cafbc5923633"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -344,8 +344,10 @@ dependencies = [
  "dashmap",
  "env_logger",
  "flate2",
+ "fs2",
  "futures",
  "hex",
+ "libc",
  "log",
  "lru",
  "lz4_flex",
@@ -626,6 +628,16 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "futures"
