@@ -66,28 +66,43 @@ are all qualified; keep new ones qualified too.
 
 ## Known upstream blockers
 
-None currently. The two open at v0.11.0 are both fixed on `main` and validated;
-see below. **Pending the v0.12.0 tag** — the dep is temporarily pinned to a
-`rev` (commit `9054734`) in `Cargo.toml`; re-pin to `tag = "v0.12.0"` and set
-`runner::CQLITE_VERSION` back to `"v0.12.0"` once it's cut.
+The dep is pinned to **`tag = "v0.12.0"`** (cut 2026-06-23, commit `b70a64e8`)
+and `runner::CQLITE_VERSION` is `"v0.12.0"`. Baseline re-run on 2026-06-26 (#16,
+closed): scan throughput +41% (332k → 470k rows/s), live-heap 79.4 MB; #788/#790
+hold on the tag (see below).
 
-### Fixed on main (post-v0.11.0, validated, pre-v0.12.0 tag)
+### Open at v0.12.0
+- **Read p99 under concurrent write load ~2× worse than the interim pre-tag main
+  commit** (cqlite **#1143**, performance). Same-machine A/B: `mixed.read_while_write`
+  reader p99 ~200 µs (`9054734`) → ~371 µs (v0.12.0), distributions non-overlapping
+  across 8 samples. *Isolated* scan throughput *improved* 41% over the same range,
+  so this is a contention/tail regression, not a scan-speed one. Suspect the new
+  reader disk-access backend / prefetch (#964) or parallel-read (#815/#917) work.
+- **`read.point_lookup` is still an O(rows) full scan** (~173 ms/op for 1 row).
+  #755 (BTI offset primitive) and #949 (partition-eq lookup) are in the tag, but
+  the within-SSTable single-candidate seek wiring (#953, closed 2026-06-24) and
+  its regression fix (#1105, closed 2026-06-26) landed **after** the v0.12.0 cut.
+  So sub-ms lookups are pending the next tag — tracked on harness #17.
+
+### Fixed in v0.12.0 (validated on the tag; were validated earlier on interim main)
 - **Clustering-key inequality bounds (`>=`, `>`, `<`) now applied** (cqlite
   **#788**). `WHERE pk=? AND ck>=? AND ck<?` returns the slice, not the whole
-  partition. `read.clustering_slice` now genuinely slices (200 rows/op, was
-  1000). Repro: `cargo run --example probe_slice` (all forms → 200).
+  partition. `read.clustering_slice` genuinely slices (200 rows/op, was 1000;
+  throughput also ~doubled, 1194 → 2358 rows/s). Repro: `cargo run --example
+  probe_slice` (all forms → 200).
 - **`execute_streaming` no longer materializes the whole result** (cqlite
-  **#790**). Live-heap high-water on a 100k-row `read.full_scan` dropped 194 MB
-  → 79.5 MB (dhat); peak RSS 2.1 GB → 1.7 GB. Still appears to scale somewhat
-  with row count (not fully O(1)) — a row-count scaling test (larger corpus)
-  would confirm; not currently blocking.
+  **#790**). Live-heap high-water on a 100k-row `read.full_scan` is 79.4 MB on
+  the tag (was 194 MB pre-fix), via `memscan --features dhat-heap`; peak RSS
+  ~0.9–1.7 GB. Still appears to scale somewhat with row count (not fully O(1)) —
+  a row-count scaling test (larger corpus) would confirm; not currently blocking.
 
 ### Fixed in v0.11.0 (were blocking in v0.10.0)
 - **`WHERE pk = ?` on a TEXT partition key now returns correct rows** (cqlite
   #586 → PR #588, "reconstruct TEXT partition-key columns on the scan path").
   Unblocks `read.point_lookup` (1 row per lookup). Note it's still a full scan
-  with residual filtering per lookup (~330 ms/op) — no O(log n) partition seek
-  yet (upstream #755, open). Repro: `cargo run --example probe_point`.
+  with residual filtering per lookup (~173 ms/op on v0.12.0) — the O(log n)
+  partition seek (#755/#949/#953) is not yet in a tag; see "Open at v0.12.0"
+  above. Repro: `cargo run --example probe_point`.
 - **`maintenance_step()` no longer panics inside a tokio runtime** (cqlite #587
   → PR #593). `write.compaction` keeps the `spawn_blocking` hop for now; it can
   be simplified to a direct call later.

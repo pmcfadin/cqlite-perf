@@ -56,6 +56,7 @@ pub(crate) fn basic_schema() -> TableSchema {
         clustering_keys: vec![],
         columns: vec![col("id"), col("name"), col("payload")],
         comments: HashMap::new(),
+        dropped_columns: HashMap::new(),
     }
 }
 

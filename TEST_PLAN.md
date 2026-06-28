@@ -39,7 +39,7 @@ Reference B matrix passed; "Perf" = a baseline run is recorded under `reports/`.
 |---|---|:--:|:--:|---|
 | v0.11.0 | 2026-06-16 | ✅ | ✅ | keyspace-qualified change surfaced; found cqlite #788/#790 |
 | main@9054734 | 2026-06-16 | ✅ | ✅ | #788/#790 validated; read live-heap 79.5 MB |
-| v0.12.0 | _pending_ | — | — | re-pin `rev → tag` + re-baseline (#16) |
+| v0.12.0 | 2026-06-26 | ✅ | ✅ | re-pinned `rev → tag` (#16); scan +41% (332k→470k rows/s), live-heap 79.4 MB; #788/#790 hold. Found read-p99-under-write-load ~2x regression → cqlite #1143. point_lookup still full-scan (seek wiring #953 post-tag) |
 
 ---
 
