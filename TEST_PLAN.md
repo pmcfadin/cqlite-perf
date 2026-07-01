@@ -25,7 +25,7 @@ Reference A run procedure (add a ledger row).
 | Phase | Status | Exit criteria met |
 |---|---|---:|
 | 1 · Unknown → Known | ✅ done | 4 / 4 |
-| 2 · Improvement | 🟡 in progress | 1 / 3 |
+| 2 · Improvement | ✅ done | 3 / 3 (goals recalibrated #19; v0.12.0 tag re-baseline #16 — loop repeats per engine version) |
 | 3 · Regression-locked | ✅ done | 3 / 3 (correctness gate live in CI #8; perf-regression gate live in CI #23) |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done.
@@ -39,7 +39,7 @@ Reference B matrix passed; "Perf" = a baseline run is recorded under `reports/`.
 |---|---|:--:|:--:|---|
 | v0.11.0 | 2026-06-16 | ✅ | ✅ | keyspace-qualified change surfaced; found cqlite #788/#790 |
 | main@9054734 | 2026-06-16 | ✅ | ✅ | #788/#790 validated; read live-heap 79.5 MB |
-| v0.12.0 | 2026-06-26 | ✅ | ✅ | re-pinned `rev → tag` (#16); scan +41% (332k→470k rows/s), live-heap 79.4 MB; #788/#790 hold. Found read-p99-under-write-load ~2x regression → cqlite #1143. point_lookup still full-scan (seek wiring #953 post-tag) |
+| v0.12.0 | 2026-06-26 | ✅ | ✅ | re-pinned `rev → tag` (#16); scan +41% (332k→470k rows/s), live-heap 79.4 MB; #788/#790 hold. Found read-p99-under-write-load ~2x regression → cqlite #1143 (fixed upstream 2026-07-01 via #1347, post-tag — validate at next tag). point_lookup still full-scan (seek wiring #953 post-tag) |
 
 ---
 
@@ -67,8 +67,9 @@ memory profile, and a bottleneck attribution. Every surprise becomes an issue.
 - [x] Scan-decode bottleneck attributed (decode vs decompress vs alloc). *(#6 — dhat attribution: HashMap rehash in `parse_row_data_with_offset` ~40%, `parse_block` ~13%, lz4 ~4%, `parse_cell_value_schema_order` ~3.6%; flamegraph script ready for Linux `perf` capture)*
 - [x] All deviations filed upstream with repros and cross-linked.
 
-**Open work:** #6 (flamegraphs — scan bottleneck unknown), #18 (is streaming
-O(1) in rows? unknown; needs M/L tiers), M/L corpus tiers.
+**Open work:** #25 (flamegraph SVG capture on a privileged Linux runner — the
+attribution itself landed via dhat, #6), #24 (optional M-tier corpus for
+large-scale scan numbers; the O(1)-streaming question was settled without it, #18).
 
 ---
 
@@ -94,11 +95,16 @@ recalibrating targets from data, and validating each fix as it lands.
 
 **Exit criteria**
 - [x] Top bottlenecks each have an upstream issue with a repro/profile. *(#788, #790; read seek #17→cqlite #755)*
-- [ ] All goals are data-grounded (property or baseline-relative), no placeholders. *(memory done; throughput/p99 pending #19)*
-- [ ] Every landed fix validated and re-baselined to a tag. *(#788/#790 validated; tag re-baseline pending #16)*
+- [x] All goals are data-grounded (property or baseline-relative), no placeholders. *(#19 — memory property-based; throughput/p99 baseline-relative, CI-enforced via #23)*
+- [x] Every landed fix validated and re-baselined to a tag. *(#788/#790 validated on the v0.12.0 tag; re-baseline done #16)*
 
-**Open work:** #17 (read index seek, blocked on cqlite #755), #19 (goal
-recalibration), #16 (re-pin to v0.12.0 + re-baseline), #7 (bindings overhead).
+**Open work** (the improvement loop repeats per engine version):
+- #17 point-lookup seek — engine wiring (cqlite #953 + regression fix #1105)
+  landed on main **after** the v0.12.0 cut; validate at the next tag.
+- #27 read-p99-under-write-load — upstream cqlite #1143 **fixed on main
+  2026-07-01** (PR #1347: mmap `Auto` prefetch no longer issues the
+  `MADV_SEQUENTIAL` drop-behind); validate at the next tag.
+- #7 bindings overhead (deferred until the core data story is solid).
 
 ---
 
@@ -123,7 +129,16 @@ correctness + performance regression and fails loudly on any backslide.
 - [x] Perf regression beyond budget fails CI against the recorded baseline. *(`scorecard --enforce` gating ships in #23: two baseline-relative enforced goals — `read.full_scan` throughput and `read.point_lookup` p99, 30% budget — conditional on a prior `linux-baseline-master` artifact; first run yields NoData → not a failure)*
 - [x] Every engine bump runs the gate automatically. *(ci.yml fires on `pull_request` + `push: master`; an engine bump is a Cargo.toml/Cargo.lock change that lands that way)*
 
-**Open work:** Flamegraph SVG capture on a privileged Linux runner (#6, script ready). All three Phase 3 exit criteria are now met.
+**Open work:** flamegraph SVG capture on a privileged Linux runner (#25, script
+ready). All three Phase 3 exit criteria are now met.
+
+**Between-tag tracking:** the CI gates only fire when the pin changes, so a
+regression on engine `main` stays invisible until the next tag re-baseline
+(cqlite #1143 was caught that way — at #16, days after it landed). The nightly
+**main-tracking** workflow (`.github/workflows/main-tracking.yml`) closes that
+gap: it rev-pins the harness to engine `main@HEAD`, runs the correctness gate
+(hard fail) and a perf smoke including `mixed.read_while_write`, and renders a
+non-enforcing scorecard against the latest tag baseline.
 
 ---
 ---

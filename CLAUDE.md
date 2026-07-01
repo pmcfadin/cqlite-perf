@@ -76,8 +76,11 @@ hold on the tag (see below).
   commit** (cqlite **#1143**, performance). Same-machine A/B: `mixed.read_while_write`
   reader p99 ~200 µs (`9054734`) → ~371 µs (v0.12.0), distributions non-overlapping
   across 8 samples. *Isolated* scan throughput *improved* 41% over the same range,
-  so this is a contention/tail regression, not a scan-speed one. Suspect the new
-  reader disk-access backend / prefetch (#964) or parallel-read (#815/#917) work.
+  so this is a contention/tail regression, not a scan-speed one. **Fixed on main
+  2026-07-01** (cqlite PR #1347): root cause was #964 flipping the default read
+  backend to mmap with `PrefetchMode::Auto` → `MADV_SEQUENTIAL` drop-behind, so
+  under write load evicted pages became synchronous major faults on tokio worker
+  threads. The fix lands in the **next tag** — validate then and close harness #27.
 - **`read.point_lookup` is still an O(rows) full scan** (~173 ms/op for 1 row).
   #755 (BTI offset primitive) and #949 (partition-eq lookup) are in the tag, but
   the within-SSTable single-candidate seek wiring (#953, closed 2026-06-24) and
