@@ -1,0 +1,210 @@
+# main-tracking.yml — nightly run of the harness against engine main@HEAD
+#
+# Why this exists:
+#   ci.yml gates the *pinned* engine version — it only sees a new engine when
+#   Cargo.toml is bumped to a tag. Anything that lands on pmcfadin/cqlite main
+#   between tags is invisible until the next re-baseline. That is exactly how
+#   the v0.12.0 read-p99-under-write-load regression (cqlite #1143) stayed
+#   hidden until the #16 re-baseline. This workflow closes the gap: every night
+#   it rev-pins the harness to engine main@HEAD, runs the correctness gate and
+#   a perf smoke, and renders a scorecard against the latest tag baseline.
+#
+# Enforcement policy (deliberately different from ci.yml):
+#   • Correctness (`cqlite-perf validate`) is a HARD gate — if main breaks row
+#     counts, the nightly goes red. That is the early warning working.
+#   • A build failure is also signal, not noise: it means the next tag will
+#     break the harness (API change) — file/triage before the tag lands.
+#   • Perf is NON-enforcing: the scorecard vs the tag baseline is rendered into
+#     the job summary for a human (or agent) to read. Main is a moving target;
+#     enforced perf gates stay in ci.yml where the pin is deliberate.
+#
+# The smoke includes mixed.read_while_write — the tail-latency-under-write-load
+# workload that caught #1143 and that the engine's own Criterion micro-bench
+# gate cannot see.
+#
+# Findings flow per TEST_PLAN.md Reference D: correctness fail → minimal
+# probe repro → file on pmcfadin/cqlite (issues only, never push code).
+
+name: Main tracking (nightly, non-enforcing)
+
+on:
+  schedule:
+    # 08:17 UTC daily (off-peak, off-the-hour to dodge scheduler congestion).
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+    inputs:
+      rev:
+        description: "Engine commit to pin (default: current main@HEAD)"
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  actions: read # for gh run download of the ci.yml baseline artifact
+
+jobs:
+  track-main:
+    name: Correctness + perf smoke vs engine main
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Resolve and apply the main@HEAD rev-pin ──────────────────────────────
+      # Same mechanism as the manual interim loop (TEST_PLAN.md Reference A
+      # step 0): tag → rev in Cargo.toml, and CQLITE_VERSION → main@<short-sha>
+      # so results.jsonl is stamped with what actually ran.
+      - name: Pin cqlite-core to engine main@HEAD
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="${{ inputs.rev }}"
+          if [[ -z "$SHA" ]]; then
+            SHA=$(gh api repos/pmcfadin/cqlite/commits/main --jq .sha)
+          fi
+          SHORT=${SHA:0:8}
+          echo "Pinning cqlite-core to $SHA (main@$SHORT)"
+
+          sed -i -E 's#(cqlite-core = \{ git = "https://github.com/pmcfadin/cqlite.git", )(tag|rev) = "[^"]+"#\1rev = "'"$SHA"'"#' Cargo.toml
+          grep -F "rev = \"$SHA\"" Cargo.toml \
+            || { echo "::error::rev-pin sed did not apply — Cargo.toml dep line format changed?"; exit 1; }
+
+          sed -i -E 's|const CQLITE_VERSION: &str = "[^"]+";|const CQLITE_VERSION: \&str = "main@'"$SHORT"'";|' src/runner.rs
+          grep -F "main@$SHORT" src/runner.rs \
+            || { echo "::error::CQLITE_VERSION sed did not apply — src/runner.rs const format changed?"; exit 1; }
+
+          echo "ENGINE_SHA_SHORT=$SHORT" >> "$GITHUB_ENV"
+
+      # ── Rust toolchain + build cache ─────────────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      - name: Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          # Distinct prefix so nightly saves never clobber ci.yml's cache, but
+          # fall back to it for a warm registry on first run.
+          key: rust-main-tracking-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-main-tracking-${{ runner.os }}-
+            rust-${{ runner.os }}-
+
+      - name: Build release binary (against engine main)
+        # A failure here is itself a finding: the next tag will break the
+        # harness. Triage per Reference D before that tag is cut.
+        run: cargo build --release
+
+      # ── Corpus provisioning (shared cache with ci.yml, SHA256-keyed) ─────────
+      - name: Restore corpus cache
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: datasets/
+          key: corpus-${{ runner.os }}-${{ hashFiles('datasets/manifests/**') }}
+
+      - name: Generate corpora (cache miss only)
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema basic
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
+
+      - name: Verify corpus SHA256 against manifests
+        run: ./target/release/cqlite-perf datasets --check
+
+      # ── Correctness gate (HARD — this is the early warning) ──────────────────
+      - name: Correctness gate on main (cqlite-perf validate)
+        run: ./target/release/cqlite-perf validate
+
+      # ── Perf smoke (informational) ───────────────────────────────────────────
+      # Same read smoke as ci.yml, plus the mixed workload that caught #1143.
+      - name: Perf smoke (read.full_scan)
+        run: |
+          mkdir -p reports/main-tracking
+          ./target/release/cqlite-perf run \
+            --workload read.full_scan \
+            --duration 10s --warmup 5s --trials 1 \
+            --out reports/main-tracking
+
+      - name: Perf smoke (read.point_lookup)
+        run: |
+          ./target/release/cqlite-perf run \
+            --workload read.point_lookup \
+            --duration 10s --warmup 5s --trials 1 \
+            --out reports/main-tracking
+
+      - name: Perf smoke (mixed.read_while_write — tail latency under write load)
+        run: |
+          ./target/release/cqlite-perf run \
+            --workload mixed.read_while_write \
+            --concurrency 8 --warmup 0 --duration 12s --trials 3 \
+            --out reports/main-tracking
+
+      # ── Compare against the latest tag baseline (non-enforcing) ──────────────
+      # The authoritative baseline is the linux-baseline-master artifact recorded
+      # by ci.yml on master pushes (i.e. the pinned tag's numbers on this same
+      # runner class). Mixed-workload goals will read NoData against it (ci.yml
+      # doesn't run mixed) — the raw numbers still land in the summary and the
+      # artifact for trend reading.
+      - name: Download latest tag baseline (ci.yml master artifact)
+        id: tag-baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(gh run list --workflow=ci.yml --branch master --status success -L 10 \
+            --json databaseId -q '.[].databaseId' | head -1 || true)
+          if [[ -z "${RUN_ID:-}" ]]; then
+            echo "No successful master ci.yml run found; skipping scorecard."
+            echo "found=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mkdir -p reports/tag-baseline
+          if gh run download "$RUN_ID" -n linux-baseline-master -D reports/tag-baseline; then
+            echo "Downloaded tag baseline from master run $RUN_ID"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No linux-baseline-master artifact on run $RUN_ID; skipping scorecard."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Scorecard vs tag baseline (non-enforcing) → job summary
+        if: steps.tag-baseline.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          CURRENT=$(find reports/main-tracking -name 'results.jsonl' | sort | tail -1)
+          PRIOR=$(find reports/tag-baseline -name 'results.jsonl' | sort | tail -1)
+          if [[ -z "$CURRENT" || -z "$PRIOR" ]]; then
+            echo "results.jsonl missing; skipping scorecard."
+            exit 0
+          fi
+          # No --enforce: main is a moving target; this renders the comparison
+          # for a human to read, it does not gate.
+          ./target/release/cqlite-perf scorecard \
+            --baseline "$PRIOR" \
+            --results "$CURRENT" \
+            --goals goals.toml
+          {
+            echo "## Main tracking — engine main@${ENGINE_SHA_SHORT} vs latest tag baseline"
+            echo ""
+            cat "$(dirname "$CURRENT")/SCORECARD.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload main-tracking results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-tracking-${{ env.ENGINE_SHA_SHORT }}
+          path: reports/main-tracking/
+          retention-days: 30
