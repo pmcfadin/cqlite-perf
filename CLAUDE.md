@@ -119,6 +119,17 @@ hold on the tag (see below).
 - Scan throughput up ~40% on lz4 (~218k → ~311k rows/s), likely the Index.db
   point-lookup work (#584). `write-support` is now a default feature (#558).
 
+## On-demand perf report (with charts)
+
+`scripts/run-perf-report.sh [quick|read|headline|full]` — one command: build →
+`datasets --check` → `validate` (hard gate) → suite → SUMMARY/SCORECARD →
+**`REPORT.html`** with inline-SVG charts (this run's throughput/latency + a
+cross-version trend built from every `reports/*/results.jsonl`), auto-opened on
+macOS. Charts are rendered by `scripts/render_report.py` (stdlib-only python).
+It also charts `intervals.jsonl` soak series when present (#31). Note: quick
+1-trial runs land in `reports/<date>-…/` but should **not** be committed —
+committed report dirs are baseline evidence and feed everyone's trend charts.
+
 ## M2 workloads (write + mixed)
 
 Run the whole write+mixed suite + regenerate reports with
