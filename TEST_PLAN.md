@@ -27,6 +27,7 @@ Reference A run procedure (add a ledger row).
 | 1 · Unknown → Known | ✅ done | 4 / 4 |
 | 2 · Improvement | ✅ done | 3 / 3 (goals recalibrated #19; v0.12.0 tag re-baseline #16 — loop repeats per engine version) |
 | 3 · Regression-locked | ✅ done | 3 / 3 (correctness gate live in CI #8; perf-regression gate live in CI #23) |
+| Soak tier (epic #30) | 🟡 in progress | mechanism + profiles + runbook shipped (#31, #33, Reference E); trend goals wired but uncalibrated (#32); weekly CI cadence open (#34) |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ done.
 
@@ -34,12 +35,17 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done.
 
 One row per engine version taken through Reference A. "Correctness" = the
 Reference B matrix passed; "Perf" = a baseline run is recorded under `reports/`.
+"Soak" = a calibrated `soak.mixed`/`soak.ingest` run recorded for that version
+per Reference E — **pending** for every row below: `scripts/run-soak.sh` (#33)
+lands the mechanism but no full-duration calibration run has been recorded
+against any engine version yet. The column will start filling in once the
+first authoritative soak (Reference E) completes.
 
-| Engine | Date | Correctness | Perf | Notes |
-|---|---|:--:|:--:|---|
-| v0.11.0 | 2026-06-16 | ✅ | ✅ | keyspace-qualified change surfaced; found cqlite #788/#790 |
-| main@9054734 | 2026-06-16 | ✅ | ✅ | #788/#790 validated; read live-heap 79.5 MB |
-| v0.12.0 | 2026-06-26 | ✅ | ✅ | re-pinned `rev → tag` (#16); scan +41% (332k→470k rows/s), live-heap 79.4 MB; #788/#790 hold. Found read-p99-under-write-load ~2x regression → cqlite #1143 (fixed upstream 2026-07-01 via #1347, post-tag — validate at next tag). point_lookup still full-scan (seek wiring #953 post-tag) |
+| Engine | Date | Correctness | Perf | Soak | Notes |
+|---|---|:--:|:--:|:--:|---|
+| v0.11.0 | 2026-06-16 | ✅ | ✅ | ⬜ pending | keyspace-qualified change surfaced; found cqlite #788/#790 |
+| main@9054734 | 2026-06-16 | ✅ | ✅ | ⬜ pending | #788/#790 validated; read live-heap 79.5 MB |
+| v0.12.0 | 2026-06-26 | ✅ | ✅ | ⬜ pending | re-pinned `rev → tag` (#16); scan +41% (332k→470k rows/s), live-heap 79.4 MB; #788/#790 hold. Found read-p99-under-write-load ~2x regression → cqlite #1143 (fixed upstream 2026-07-01 via #1347, post-tag — validate at next tag). point_lookup still full-scan (seek wiring #953 post-tag) |
 
 ---
 
@@ -140,6 +146,14 @@ gap: it rev-pins the harness to engine `main@HEAD`, runs the correctness gate
 (hard fail) and a perf smoke including `mixed.read_while_write`, and renders a
 non-enforcing scorecard against the latest tag baseline.
 
+**Soak tier (epic #30):** a fourth tier alongside the three phases above,
+purpose-built for regressions that only surface over hours rather than
+seconds — see Reference E. Mechanism (`--snapshot-interval`, #31) and profiles
++ runbook (`soak.mixed`/`soak.ingest`, `scripts/run-soak.sh`, Reference E, #33)
+are in place; `goals.toml`'s soak trend goals (#32) are wired but
+`enforce = false` pending calibration; the weekly CI cadence (`soak.yml`, #34)
+and per-engine-version Soak-column data (ledger above) are open work.
+
 ---
 ---
 
@@ -203,3 +217,56 @@ point_lookup 1; clustering_slice 200; type_heavy 100000; wide_partition 100000.
 - Perf regression → localize with flamegraph (#6) or dhat (#4 tooling) → attach
   the profile → file upstream.
 - Cross-link both directions (upstream # on our issue; harness repro path on theirs).
+
+## Reference E — Soak protocol
+
+Sustained-duration runs that catch what a few-second run structurally cannot:
+throughput decay, RSS growth, and tail-latency drift over hours. Mechanism is
+the runner's soak time-series mode (#31, `--snapshot-interval`) plus the two
+declared profiles (`soak.mixed`, `soak.ingest`, #33) driven by
+`scripts/run-soak.sh`; goal budgets are `goals.toml`'s soak trend goals (#32).
+This reference extends — does not replace — Reference C: Reference C's clean-
+room rules (bare metal, quiesced, fixed seed, no cross-host comparison) still
+govern any absolute number a soak run reports; Reference E adds the
+*duration* axis and the *self-relative* trend metrics that come with it.
+
+**Cadence + host classes.**
+- **Weekly, 2h, GH-hosted runner** — `soak.yml` (#34). Shared, noisy CI
+  hardware makes absolute throughput/latency numbers meaningless run-to-run,
+  but the soak trend metrics (`custom.trend.*`: throughput retention, p99
+  drift ratio, RSS slope) are **self-relative** — a run judged against its own
+  first-quartile windows — so they stay valid on noisy shared hardware the
+  same way T0's PR-vs-main micro-benches do (`goals.toml`'s soak-trend-goals
+  header comment; `perf-strategy.md` §1 principle 5). Treat any absolute
+  number from this cadence as informational only.
+- **4h+, bare-metal, quiesced Mac, per engine tag** — authoritative. Follows
+  Reference C in full (no Docker for measurement, fixed seed, host signature
+  stamped) with the soak duration on top. This is the run that adds a row to
+  the engine version ledger's Soak column above.
+
+**Acceptance.**
+- The correctness gate (`cqlite-perf validate`) still runs first — standing
+  rule, correctness gates before performance (TEST_PLAN.md intro). A soak that
+  runs for hours against wrong rows is worthless.
+- Budgets are the soak trend goals in `goals.toml` (#32): throughput
+  retention, reader-cohort p99 drift ratio, RSS slope. They ship
+  `enforce = false` (PLACEHOLDER targets) until ≥3 weekly calibration runs
+  exist — see `goals.toml`'s soak-trend-goals header comment for the exact
+  calibration procedure and the follow-up-issue template that flips them to
+  `enforce = true`.
+
+**Triage.**
+1. A trend budget exceeded → localize with the nightly main-tracking history
+   (`.github/workflows/main-tracking.yml`) — which nightly run first shows the
+   drift starting?
+2. Targeted probe/profile on the localized range (flamegraph #6, dhat #4
+   tooling, or a minimal `examples/probe_*.rs`), the same tools Reference D
+   uses for a point-in-time regression.
+3. File upstream per Reference D (issues only, minimal repro, cross-linked
+   both directions).
+
+**Ledger.** The engine version ledger (above) carries a Soak column; every row
+is `⬜ pending` until the first authoritative (4h+, bare-metal) soak run
+completes for that version. Fill it in the same way Correctness/Perf are
+filled — one calibrated run per engine version, per Reference A's promotion
+step.
