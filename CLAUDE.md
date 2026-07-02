@@ -6,7 +6,10 @@ git tag (currently **v0.11.0**). The engine is **not in this repo** — it lives
 
 ## Test roadmap — `TEST_PLAN.md` (read first for any validation work)
 
-[`TEST_PLAN.md`](TEST_PLAN.md) is the canonical plan. Validation follows a
+[`TEST_PLAN.md`](TEST_PLAN.md) is the canonical plan. The full tier model
+(micro → macro gates → nightly main-tracking → weekly soak → M-tier →
+distributed Flight via easy-db-lab → bindings) lives in
+[`docs/perf-strategy.md`](docs/perf-strategy.md); build-out is epic #30. Validation follows a
 progression — **Unknown → Known (Phase 1) → Improved (Phase 2) →
 Regression-locked (Phase 3)** — with a progress dashboard, an engine-version
 ledger, the per-version run procedure (Reference A), the correctness matrix with
