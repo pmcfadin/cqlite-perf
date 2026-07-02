@@ -174,6 +174,13 @@ struct RunArgs {
     #[arg(long, default_value_t = false)]
     cold_cache: bool,
 
+    /// Soak time series (issue #31): emit per-cohort interval snapshots (window
+    /// throughput/latency + RSS) every this often to intervals.jsonl next to
+    /// results.jsonl, and derive `custom.trend.*` metrics on the final result.
+    /// e.g. "60s". "0s" (default) = off.
+    #[arg(long, default_value = "0s")]
+    snapshot_interval: String,
+
     /// Output root for reports.
     #[arg(long, default_value = "reports")]
     out: PathBuf,
@@ -499,6 +506,9 @@ struct RunPlan {
     trials: u32,
     cold_cache: bool,
     seed: u64,
+    /// Soak series (issue #31): emit per-cohort interval snapshots every N
+    /// seconds to intervals.jsonl. 0 = off.
+    snapshot_interval_secs: u64,
 }
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {
@@ -517,6 +527,12 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             trials: cfg.trials,
             cold_cache: cfg.cold_cache,
             seed: cfg.seed,
+            snapshot_interval_secs: cfg
+                .snapshot_interval
+                .as_deref()
+                .map(parse_secs)
+                .transpose()?
+                .unwrap_or(0),
         }
     } else {
         let wl = args
@@ -534,6 +550,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             trials: args.trials,
             cold_cache: args.cold_cache,
             seed: args.seed,
+            snapshot_interval_secs: parse_secs(&args.snapshot_interval)?,
         }
     };
 
@@ -577,6 +594,9 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
                             seed: plan.seed,
                             cold_cache: plan.cold_cache,
                             work_dir: work_dir.clone(),
+                            snapshot_interval_secs: plan.snapshot_interval_secs,
+                            intervals_path: (plan.snapshot_interval_secs > 0)
+                                .then(|| report.dir().join("intervals.jsonl")),
                         };
                         println!(
                             "\n▶ {name}  (tier={tier} codec={codec} dist={distribution} \

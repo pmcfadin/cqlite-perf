@@ -25,6 +25,13 @@ pub struct RunContext {
     /// Scratch directory root for workloads that generate their own data
     /// (write/volume). Read workloads resolve datasets via manifest instead.
     pub work_dir: std::path::PathBuf,
+    /// Soak time series (issue #31): emit a per-cohort interval snapshot every
+    /// N seconds of the measurement phase. 0 = off (the classic single-envelope
+    /// behavior, unchanged).
+    pub snapshot_interval_secs: u64,
+    /// Where interval snapshots are appended (`intervals.jsonl` in the report
+    /// dir). Only consulted when `snapshot_interval_secs > 0`.
+    pub intervals_path: Option<std::path::PathBuf>,
 }
 
 /// Outcome of a single `op()` call: how many rows it touched, for rows/sec

@@ -165,6 +165,78 @@ fn os_release() -> String {
         .unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------
+// Interval snapshots (soak time series, issue #31)
+// ---------------------------------------------------------------------------
+
+/// One window of a soak time series: per-cohort ops/latency deltas plus a
+/// process-RSS sample, emitted as a line of `intervals.jsonl` next to
+/// `results.jsonl`. The per-window histogram resets on each snapshot, so
+/// `latency_us` is window-local (drift is visible), while the envelope in
+/// `RunResult` stays cumulative.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntervalRecord {
+    pub workload: String,
+    pub cohort: String,
+    /// 1-based trial this window belongs to.
+    pub trial: u32,
+    /// Seconds from measurement start to the END of this window.
+    pub elapsed_s: u64,
+    /// Actual window length (the final window of a run may be partial).
+    pub window_s: f64,
+    pub ops: u64,
+    pub rows: u64,
+    pub throughput_ops_per_sec: f64,
+    pub latency_us: LatencyUs,
+    /// Process RSS sampled at the window boundary (process-wide, so identical
+    /// across cohort lines of the same window).
+    pub rss_bytes: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom: BTreeMap<String, f64>,
+}
+
+// ---------------------------------------------------------------------------
+// Trend derivation (issue #31) — pure math over a window series, quartile-based
+// so a single noisy window can't flip a verdict. Results land in
+// `RunResult.custom` as `trend.*` and are gated via goals.toml (issue #32).
+// ---------------------------------------------------------------------------
+
+/// Mean of the last quartile of values ÷ mean of the first quartile.
+/// `1.0` = flat, `< 1.0` = decay. Needs ≥ 4 windows, else `None`.
+pub fn quartile_ratio(values: &[f64]) -> Option<f64> {
+    let n = values.len();
+    if n < 4 {
+        return None;
+    }
+    let q = n / 4;
+    let first: f64 = values[..q].iter().sum::<f64>() / q as f64;
+    let last: f64 = values[n - q..].iter().sum::<f64>() / q as f64;
+    if first == 0.0 {
+        return None;
+    }
+    Some(last / first)
+}
+
+/// Least-squares slope of `(secs, value)` samples, converted to per-hour.
+/// Needs ≥ 2 distinct x values, else `None`.
+pub fn slope_per_hour(samples: &[(f64, f64)]) -> Option<f64> {
+    let n = samples.len() as f64;
+    if samples.len() < 2 {
+        return None;
+    }
+    let mean_x = samples.iter().map(|(x, _)| x).sum::<f64>() / n;
+    let mean_y = samples.iter().map(|(_, y)| y).sum::<f64>() / n;
+    let sxx: f64 = samples.iter().map(|(x, _)| (x - mean_x).powi(2)).sum();
+    if sxx == 0.0 {
+        return None;
+    }
+    let sxy: f64 = samples
+        .iter()
+        .map(|(x, y)| (x - mean_x) * (y - mean_y))
+        .sum();
+    Some(sxy / sxx * 3600.0)
+}
+
 /// Coefficient of variation (stddev / mean) for a set of trial throughputs.
 /// Returns 0.0 for fewer than two samples or a zero mean.
 pub fn coefficient_of_variation(samples: &[f64]) -> f64 {
@@ -191,5 +263,58 @@ pub fn median(samples: &[f64]) -> f64 {
         (s[mid - 1] + s[mid]) / 2.0
     } else {
         s[mid]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quartile_ratio_flat_series_is_one() {
+        let v = vec![100.0; 12];
+        assert_eq!(quartile_ratio(&v), Some(1.0));
+    }
+
+    #[test]
+    fn quartile_ratio_detects_decay() {
+        // 8 windows: first quartile (2) mean 100, last quartile (2) mean 80.
+        let v = vec![100.0, 100.0, 95.0, 92.0, 88.0, 85.0, 81.0, 79.0];
+        let r = quartile_ratio(&v).unwrap();
+        assert!((r - 0.80).abs() < 1e-9, "got {r}");
+    }
+
+    #[test]
+    fn quartile_ratio_single_spike_does_not_flip_verdict() {
+        // Flat except one noisy window inside the body — quartiles ignore it.
+        let mut v = vec![100.0; 12];
+        v[6] = 10.0;
+        assert_eq!(quartile_ratio(&v), Some(1.0));
+    }
+
+    #[test]
+    fn quartile_ratio_needs_four_windows() {
+        assert_eq!(quartile_ratio(&[1.0, 2.0, 3.0]), None);
+        assert_eq!(quartile_ratio(&[]), None);
+    }
+
+    #[test]
+    fn slope_flat_is_zero() {
+        let s: Vec<(f64, f64)> = (0..10).map(|i| (i as f64 * 60.0, 500.0)).collect();
+        assert!(slope_per_hour(&s).unwrap().abs() < 1e-9);
+    }
+
+    #[test]
+    fn slope_recovers_known_growth() {
+        // +2 MB every 60 s → 120 MB/h.
+        let s: Vec<(f64, f64)> = (0..20).map(|i| (i as f64 * 60.0, 100.0 + 2.0 * i as f64)).collect();
+        let m = slope_per_hour(&s).unwrap();
+        assert!((m - 120.0).abs() < 1e-6, "got {m}");
+    }
+
+    #[test]
+    fn slope_needs_two_distinct_points() {
+        assert_eq!(slope_per_hour(&[(0.0, 1.0)]), None);
+        assert_eq!(slope_per_hour(&[(5.0, 1.0), (5.0, 2.0)]), None);
     }
 }
