@@ -132,7 +132,7 @@ correctness + performance regression and fails loudly on any backslide.
 
 **Exit criteria**
 - [x] Correctness mismatch fails CI (non-zero exit), not a human reading a table. *(`.github/workflows/ci.yml` — `cqlite-perf validate` is a hard gate; verified green on PR #22, runs 27667412017 + 27667818006)*
-- [x] Perf regression beyond budget fails CI against the recorded baseline. *(`scorecard --enforce` gating ships in #23: two baseline-relative enforced goals — `read.full_scan` throughput and `read.point_lookup` p99, 30% budget — conditional on a prior `linux-baseline-master` artifact; first run yields NoData → not a failure)*
+- [x] Perf regression beyond budget fails CI against the recorded baseline. *(`scorecard --enforce` gating ships in #23: two baseline-relative enforced goals — `read.full_scan` throughput and `read.point_lookup` p99, 30% budget. Originally judged against a cross-run `linux-baseline-master` artifact; **fixed in #39** to re-measure `master` in a git worktree on the SAME runner in the SAME job — the cross-run version produced spurious ~50–60% "regressions" from pure GitHub-fleet hardware variance, hitting two unrelated docs/scripts-only PRs (#38, #45) before the fix. The cross-run artifact comparison is kept as informational-only trend context, per Reference C.)*
 - [x] Every engine bump runs the gate automatically. *(ci.yml fires on `pull_request` + `push: master`; an engine bump is a Cargo.toml/Cargo.lock change that lands that way)*
 
 **Open work:** flamegraph SVG capture on a privileged Linux runner (#25, script
