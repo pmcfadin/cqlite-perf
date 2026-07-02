@@ -235,16 +235,28 @@ jobs:
       # target/ across the branch switch here would carry incremental-
       # compilation state between two different source trees, same caution
       # the upstream engine's perf-regression.yml documents for its own
-      # PR-vs-main pattern). The corpus is NOT regenerated for the master
+      # PR-vs-main pattern). The corpus DATA is not regenerated for the master
       # build — it's symlinked from the main checkout so both measurements run
-      # against byte-identical data.
+      # against byte-identical bytes.
+      #
+      # `datasets/manifests/*.json` is git-tracked (see .gitignore), so the
+      # worktree checkout ALREADY materializes a real `datasets/manifests/`
+      # dir — a single `ln -s ... datasets` would land INSIDE that existing
+      # directory (GNU ln's directory-target behavior) rather than replacing
+      # it, leaving the actual corpus data (the gitignored `read-*-S-*/`
+      # subdirs) invisible. Symlink each corpus subdir individually instead,
+      # leaving the git-checked-out `manifests/` alone.
       - name: Build + smoke master (same runner, PR only)
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           git fetch origin master --depth=1
           git worktree add /tmp/master-checkout FETCH_HEAD
-          ln -s "$GITHUB_WORKSPACE/datasets" /tmp/master-checkout/datasets
+          for d in "$GITHUB_WORKSPACE"/datasets/*/; do
+            name=$(basename "$d")
+            [[ "$name" == "manifests" ]] && continue
+            ln -s "$d" "/tmp/master-checkout/datasets/$name"
+          done
           (
             cd /tmp/master-checkout
             cargo build --release
@@ -263,6 +275,13 @@ jobs:
       # beyond its budget, judged against master measured on THIS SAME runner
       # (the step above) — not a cross-run artifact. Both smoke workloads
       # append to the same timestamped results.jsonl (tail -1 finds it).
+      #
+      # A missing/empty results.jsonl here means the master build step above
+      # is broken (it always runs in this same job on pull_request events, so
+      # there is no legitimate "no data yet" case the way a cross-run artifact
+      # could be absent) — fail LOUDLY rather than silently skip, so a
+      # regression in the gate itself can't hide behind a green check the way
+      # the "ln -s onto an existing directory" bug did during #39's fix.
       - name: Regression gate (scorecard --enforce vs master, same runner)
         if: github.event_name == 'pull_request'
         run: |
@@ -270,8 +289,12 @@ jobs:
           CURRENT=$(find reports/linux-baseline -name 'results.jsonl' | sort | tail -1)
           BASELINE=$(find reports/master-same-runner -name 'results.jsonl' | sort | tail -1)
           if [[ -z "$CURRENT" || -z "$BASELINE" ]]; then
-            echo "No results.jsonl found; skipping regression gate."
-            exit 0
+            echo "::error::results.jsonl missing (current='$CURRENT' baseline='$BASELINE') — the master build/smoke step is broken, not a legitimate no-data case."
+            exit 1
+          fi
+          if [[ $(wc -l < "$CURRENT") -eq 0 || $(wc -l < "$BASELINE") -eq 0 ]]; then
+            echo "::error::results.jsonl exists but is empty (current has $(wc -l < "$CURRENT") lines, baseline has $(wc -l < "$BASELINE")) — every smoke workload errored out; check the 'Build + smoke master' and 'Run perf smoke' step logs."
+            exit 1
           fi
           echo "Regression gate: current(PR)=$CURRENT  baseline(master, same runner)=$BASELINE"
           # --out is omitted: scorecard writes SCORECARD.md next to --results by default.
