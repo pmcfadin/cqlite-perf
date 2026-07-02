@@ -566,4 +566,89 @@ mod tests {
         assert_eq!(failed, 1, "non-enforced regression IS a failure in total count");
         assert_eq!(enforced_failed, 0, "non-enforced regression must NOT count in enforced_failed");
     }
+
+    // ── soak trend goals (issue #32) ─────────────────────────────────────────
+
+    /// Build an absolute-target (op/target) goal for testing, mirroring the
+    /// soak trend goals in goals.toml.
+    fn trend_goal(metric: &str, workload: &str, op: &str, target: f64) -> Goal {
+        Goal {
+            name: format!("test {metric}"),
+            metric: metric.to_string(),
+            op: Some(op.to_string()),
+            target: Some(target),
+            regression_max_pct: None,
+            enforce: false,
+            workload: Some(workload.to_string()),
+            schema: None,
+            tier: None,
+            codec: None,
+            distribution: None,
+            concurrency: None,
+            cache: None,
+        }
+    }
+
+    #[test]
+    fn trend_goal_on_non_soak_run_is_no_data_not_failed() {
+        // A normal (non-soak) run has an EMPTY custom map — no `trend.*` keys
+        // at all, since only `--snapshot-interval` runs populate them (#31).
+        // This is the behavior that keeps ci.yml's `scorecard --enforce` safe
+        // once these goals exist in the shared goals.toml: short smokes with
+        // no --snapshot-interval must see NoData, never a spurious failure.
+        let goal = trend_goal(
+            "custom.trend.throughput_retention",
+            "mixed.read_while_write",
+            ">=",
+            0.95,
+        );
+        let result = make_result("mixed.read_while_write", "basic", "S", 100_000.0, 200_000);
+        assert!(result.custom.is_empty(), "non-soak fixture must have no custom keys");
+
+        let js = judge(&[goal], &[result], &[]);
+        assert_eq!(js.len(), 1);
+        assert_eq!(js[0].status, Status::NoData);
+
+        let (failed, enforced_failed) = tally(&js);
+        assert_eq!(failed, 0, "NoData trend goal must not be counted as failed");
+        assert_eq!(enforced_failed, 0);
+    }
+
+    #[test]
+    fn trend_goal_met_when_value_satisfies_target() {
+        let goal = trend_goal(
+            "custom.trend.throughput_retention",
+            "mixed.read_while_write",
+            ">=",
+            0.95,
+        );
+        let mut result = make_result("mixed.read_while_write", "basic", "S", 100_000.0, 200_000);
+        result.custom.insert("trend.throughput_retention".to_string(), 0.97);
+
+        let js = judge(&[goal], &[result], &[]);
+        assert_eq!(js[0].status, Status::Met);
+        assert_eq!(js[0].actual, Some(0.97));
+
+        let (failed, _) = tally(&js);
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn trend_goal_missed_when_value_violates_target() {
+        let goal = trend_goal(
+            "custom.trend.throughput_retention",
+            "mixed.read_while_write",
+            ">=",
+            0.95,
+        );
+        let mut result = make_result("mixed.read_while_write", "basic", "S", 100_000.0, 200_000);
+        result.custom.insert("trend.throughput_retention".to_string(), 0.80);
+
+        let js = judge(&[goal], &[result], &[]);
+        assert_eq!(js[0].status, Status::Missed);
+
+        let (failed, enforced_failed) = tally(&js);
+        assert_eq!(failed, 1);
+        assert_eq!(enforced_failed, 0, "goal.enforce is false in this fixture");
+    }
 }
