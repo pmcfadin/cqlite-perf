@@ -1,0 +1,220 @@
+# soak.yml — weekly long-burn soak run (T3, issue #34, epic #30)
+#
+# Third automation tier: ci.yml (per-PR) -> main-tracking.yml (nightly) ->
+# soak.yml (weekly). Where the first two measure seconds-scale windows, this
+# measures HOURS — the only way to see time-dependent behavior (memory
+# drift, compaction debt, tail-latency drift under sustained load) that a
+# short run structurally cannot show. See docs/perf-strategy.md and
+# TEST_PLAN.md Reference E for the full design.
+#
+# Default engine = the PINNED TAG in Cargo.toml (not main@HEAD) — a weekly
+# trend on a fixed engine isolates *time-dependent engine behavior* from
+# *engine churn*; churn is main-tracking.yml's job. The optional `rev` input
+# reuses main-tracking.yml's rev-pin mechanism verbatim for on-demand soaks of
+# a specific commit (e.g. pre-tag validation of a leak fix).
+#
+# Enforcement policy: correctness (`validate`) is a HARD gate, same as every
+# other tier. Perf/trend goals run WITHOUT --enforce until goals.toml's soak
+# trend goals (issue #32) have been calibrated from >=3 real runs of this
+# workflow — see goals.toml's soak-trend-goals header comment for the
+# calibration procedure and the follow-up-issue template that flips
+# `enforce = true`. Once flipped, add --enforce to the scorecard step below
+# so a soak regression fails this workflow, same as ci.yml's regression gate.
+
+name: Soak (weekly, long-burn)
+
+on:
+  schedule:
+    # Saturdays 06:23 UTC — quiet window, off-the-hour to dodge scheduler congestion.
+    - cron: "23 6 * * 6"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Per-profile duration (e.g. 2h, 20m for a shakedown)"
+        required: false
+        default: "2h"
+      profile:
+        description: "mixed | ingest | all"
+        required: false
+        default: "all"
+      rev:
+        description: "Engine commit to pin (default: the tag already in Cargo.toml — leave blank for the normal weekly run)"
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  actions: read # for gh run download of the ci.yml baseline artifact
+
+jobs:
+  soak:
+    name: Soak run (${{ github.event.inputs.profile || 'all' }}, ${{ github.event.inputs.duration || '2h' }})
+    runs-on: ubuntu-latest
+    # 2 profiles x up to 2h each + build/corpus margin; GH hard cap is 6h.
+    timeout-minutes: 330
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Optional rev-pin (on-demand soak of a specific commit) ───────────────
+      # Only runs when `rev` is supplied via workflow_dispatch. The normal
+      # weekly schedule leaves it blank and soaks whatever tag Cargo.toml is
+      # already pinned to (ci.yml/main-tracking.yml own re-pinning elsewhere).
+      - name: Pin cqlite-core to a specific commit (on-demand only)
+        if: github.event.inputs.rev != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="${{ github.event.inputs.rev }}"
+          SHORT=${SHA:0:8}
+          echo "Pinning cqlite-core to $SHA (on-demand soak)"
+
+          sed -i -E 's#(cqlite-core = \{ git = "https://github.com/pmcfadin/cqlite.git", )(tag|rev) = "[^"]+"#\1rev = "'"$SHA"'"#' Cargo.toml
+          grep -F "rev = \"$SHA\"" Cargo.toml \
+            || { echo "::error::rev-pin sed did not apply — Cargo.toml dep line format changed?"; exit 1; }
+
+          sed -i -E 's|const CQLITE_VERSION: &str = "[^"]+";|const CQLITE_VERSION: \&str = "soak@'"$SHORT"'";|' src/runner.rs
+          grep -F "soak@$SHORT" src/runner.rs \
+            || { echo "::error::CQLITE_VERSION sed did not apply — src/runner.rs const format changed?"; exit 1; }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88"
+
+      - name: Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: rust-soak-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-soak-${{ runner.os }}-
+            rust-${{ runner.os }}-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # ── Corpus provisioning (shared cache with ci.yml/main-tracking.yml) ─────
+      - name: Restore corpus cache
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: datasets/
+          key: corpus-${{ runner.os }}-${{ hashFiles('datasets/manifests/**') }}
+
+      - name: Generate corpora (cache miss only)
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema basic
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
+
+      - name: Verify corpus SHA256 against manifests
+        run: ./target/release/cqlite-perf datasets --check
+
+      # ── Correctness gate (HARD, standing rule: correctness before perf) ──────
+      - name: Correctness gate (cqlite-perf validate)
+        run: ./target/release/cqlite-perf validate
+
+      # ── The soak run itself ───────────────────────────────────────────────────
+      - name: Run soak profile(s)
+        run: |
+          mkdir -p reports/soak
+          bash scripts/run-soak.sh \
+            --profile "${{ github.event.inputs.profile || 'all' }}" \
+            --duration "${{ github.event.inputs.duration || '2h' }}" \
+            reports/soak
+
+      # ── Job-summary trend table (retention / RSS slope / p99 drift / max RSS,
+      #    plus a coarse per-quartile breakdown so drift is VISIBLE, not just
+      #    judged) ────────────────────────────────────────────────────────────
+      - name: Render trend summary into the job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          DIR=$(ls -d reports/soak/*/ | tail -1)
+          RESULTS="${DIR}results.jsonl"
+          INTERVALS="${DIR}intervals.jsonl"
+
+          {
+            echo "## Soak run — profile=${{ github.event.inputs.profile || 'all' }} duration=${{ github.event.inputs.duration || '2h' }}"
+            echo ""
+            echo "### Trend metrics (per workload)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          python3 -c "
+          import json
+          with open('$RESULTS') as f:
+              lines = [json.loads(l) for l in f if l.strip()]
+          for r in lines:
+              custom = r.get('custom') or {}
+              trend = {k: v for k, v in sorted(custom.items()) if k.startswith('trend.')}
+              if not trend:
+                  continue
+              print(f\"- **{r.get('workload','?')}** (concurrency={r.get('concurrency','?')}): \" +
+                    '  '.join(f'{k.removeprefix(\"trend.\")}={v:.3f}' for k, v in trend.items()))
+          " >> "$GITHUB_STEP_SUMMARY" || echo "(no trend keys found — snapshot-interval may not have been set)" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -f "$INTERVALS" ]]; then
+            {
+              echo ""
+              echo "### Per-quartile breakdown (throughput + p99, by cohort)"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+            python3 -c "
+          import json
+          from collections import defaultdict
+
+          with open('$INTERVALS') as f:
+              recs = [json.loads(l) for l in f if l.strip()]
+
+          groups = defaultdict(list)
+          for r in recs:
+              groups[(r['workload'], r['cohort'])].append(r)
+
+          for (wl, cohort), rows in sorted(groups.items()):
+              rows.sort(key=lambda r: r['elapsed_s'])
+              n = len(rows)
+              if n < 4:
+                  continue
+              q = n // 4
+              quartiles = [rows[0:q], rows[q:2*q], rows[2*q:3*q], rows[n-q:n]]
+              print(f'| {wl} [{cohort}] | Q1 | Q2 | Q3 | Q4 |')
+              print('|---|---|---|---|---|')
+              tput = [sum(r['throughput_ops_per_sec'] for r in grp) / len(grp) for grp in quartiles]
+              p99  = [sum(r['latency_us']['p99'] for r in grp) / len(grp) for grp in quartiles]
+              print('| throughput (ops/s) | ' + ' | '.join(f'{v:.0f}' for v in tput) + ' |')
+              print('| p99 (µs) | ' + ' | '.join(f'{v:.0f}' for v in p99) + ' |')
+              print()
+          " >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ── Scorecard: non-enforcing until the trend goals are calibrated ────────
+      # Once goals.toml's soak trend goals flip to enforce = true (after >=3
+      # calibration runs of THIS workflow — see goals.toml's header comment),
+      # add --enforce here so a soak regression fails the job.
+      - name: Scorecard (soak trend goals, non-enforcing until calibrated)
+        if: always()
+        run: |
+          DIR=$(ls -d reports/soak/*/ | tail -1)
+          ./target/release/cqlite-perf scorecard \
+            --results "${DIR}results.jsonl" \
+            --goals goals.toml
+          cat "${DIR}SCORECARD.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Artifacts (90-day retention for trend archaeology across weeks) ──────
+      - name: Upload soak report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-${{ github.event.inputs.rev || 'tag' }}-${{ github.run_number }}
+          path: reports/soak/
+          retention-days: 90
