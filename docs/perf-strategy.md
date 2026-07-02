@@ -118,12 +118,24 @@ Mechanics (details in the child issues):
 - **#31** — the runner grows `--snapshot-interval`: per-window (reset-on-
   snapshot) histograms per cohort, RSS sampling, a sidecar `intervals.jsonl`
   series, and derived **trend metrics** on the final result
-  (`custom.trend.throughput_retention`, `.rss_slope_mb_per_h`,
-  `.reader_p99_drift_ratio`, `.rss_max_mb`) — quartile-based so one noisy
-  window can't flip a verdict, and emitted through `RunResult.custom` so the
-  existing scorecard selects them with zero schema changes.
-- **#32** — trend goals in `goals.toml`, born `enforce = false`, calibrated
-  from the first 3 weekly runs, then flipped — the standard ladder.
+  (`custom.trend.throughput_retention`, `.rss_slope_mb_per_h`, `.rss_max_mb`,
+  `.windows`, `.p99_drift_ratio` for single-cohort runs, or
+  `.read_p99_drift_ratio` / `.write_p99_drift_ratio` for mixed workloads with
+  `read`/`write` cohorts) — quartile-based so one noisy window can't flip a
+  verdict, and emitted through `RunResult.custom` so the existing scorecard
+  selects them with zero schema changes.
+- **#32** — trend goals in `goals.toml`, born `enforce = false`, each with a
+  PLACEHOLDER rationale comment. Calibration ladder: collect ≥3 weekly
+  `soak.yml` (#34) runs → derive each target from the measured spread
+  (retention floor = measured − 3×stddev, min 0.90; drift ceiling = measured +
+  margin; slope ceiling = measured + 3×stddev with an absolute cap) → replace
+  the PLACEHOLDER target with the data-grounded one in a PR citing the runs →
+  flip `enforce = true` — the same ladder as principle 4 above and the T1
+  gates (#19 → #23). `custom.trend.*` keys only exist on `--snapshot-interval`
+  runs, so these goals render `Status::NoData` (not a failure) on every T1/T2
+  run that doesn't set that flag — `scorecard --enforce` in `ci.yml` is
+  unaffected. A follow-up issue ("flip soak goals to enforce", citing the
+  calibration runs) gets filed once #34 has accumulated that history.
 - **#33** — two profiles: `soak.mixed` (2 h `mixed.read_while_write`, conc 8,
   60 s windows — the #1143-class detector) and `soak.ingest` (2 h sustained
   WAL-on ingest + maintenance — the compaction-debt detector); plus

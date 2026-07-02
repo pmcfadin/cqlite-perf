@@ -171,3 +171,86 @@ metric             = "latency_us.p99"
 regression_max_pct = 30.0         # GH runners are noisy; 30% budget absorbs ~±15% noise while catching real regressions; 2026-06-16 measured ~401,151 µs
 workload           = "read.point_lookup"
 enforce            = true
+
+# ── Soak trend goals (T3, issue #32) ──────────────────────────────────────
+#
+# These judge a soak run against ITSELF: the runner's `--snapshot-interval`
+# mode (#31) splits a long run into windows and derives `custom.trend.*`
+# summaries comparing the last quartile of windows to the first (throughput
+# retention, p99 drift ratio) plus an RSS slope over the whole run. Because
+# the comparison is self-relative rather than an absolute number, these goals
+# are valid on shared, noisy CI runners even though Reference C's "never
+# compare across host signatures" rule forbids absolute cross-host
+# comparisons (TEST_PLAN.md Reference C) — there is no cross-host comparison
+# here, only a run against its own earlier windows. This is the same
+# principle that lets T0's PR-vs-main micro-benches run on GH-hosted runners
+# (perf-strategy.md §1, principle 5).
+#
+# The `custom.trend.*` keys only exist on a run started with
+# `--snapshot-interval` (T3 soak runs, `soak.mixed` / `soak.ingest`, #33/#34).
+# A normal T1/T2 run (smoke, nightly main-tracking, or any short CI run) has
+# no soak `custom` keys at all, so these goals render `Status::NoData` there —
+# NOT a failure — and `scorecard --enforce` continues to see only the
+# existing T1 baseline-relative goals as enforceable on those runs.
+#
+# All four goals below are `enforce = false` PLACEHOLDERS: the calibration
+# ladder (perf-strategy.md §1, principle 4) requires ≥3 measured weekly soak
+# runs before a target is data-grounded. Until then these are informational —
+# they show up in SCORECARD.md so trend values are visible on every soak run,
+# but never gate CI. Calibration procedure (mirrors #19 → #23 for the T1
+# gates):
+#   1. Collect ≥3 weekly `soak.yml` runs (#34) and record their trend values.
+#   2. Derive each target from the measured spread: retention floor =
+#      measured − 3×stddev (min 0.90); drift ceiling = measured + margin;
+#      slope ceiling = measured + 3×stddev with an absolute cap.
+#   3. Replace the PLACEHOLDER target + comment below with the data-grounded
+#      one, citing the runs, in a PR — same rationale-comment convention as
+#      every other goal in this file.
+#   4. Flip `enforce = true`. `scorecard --enforce` then turns a soak
+#      regression into a red weekly run automatically.
+#
+# Follow-up issue template (file after #34 / soak.yml has accumulated the 3
+# calibration runs above — do not file until that data exists):
+#
+#   gh issue create -R pmcfadin/cqlite-perf \
+#     --title "Flip soak trend goals to enforce (calibrated from N weekly runs)" \
+#     --body  "Part of epic #30, follow-up to #32. The soak trend goals in
+#   goals.toml (throughput_retention, read_p99_drift_ratio, rss_slope_mb_per_h,
+#   write.ingest throughput_retention) have been informational (enforce =
+#   false) since #32. soak.yml (#34) has now run weekly for N>=3 weeks with
+#   stable trend values: <cite run dates + measured values here>. Recalibrate
+#   each PLACEHOLDER target from the measured spread per the calibration
+#   procedure in goals.toml's soak-trend-goals header comment, flip
+#   enforce = true, and update perf-strategy.md's T3 status."
+
+[[goal]]
+name     = "soak mixed: throughput retention (last/first quartile)"
+metric   = "custom.trend.throughput_retention"
+op       = ">="
+target   = 0.95            # PLACEHOLDER — calibrate from >=3 weekly runs before enforcing
+workload = "mixed.read_while_write"
+enforce  = false
+
+[[goal]]
+name     = "soak mixed: reader p99 drift (last/first quartile)"
+metric   = "custom.trend.read_p99_drift_ratio"
+op       = "<="
+target   = 1.25            # PLACEHOLDER — the #1143 class of regression shows up here; key matches the shipped cohort label "read" (#31)
+workload = "mixed.read_while_write"
+enforce  = false
+
+[[goal]]
+name     = "soak mixed: RSS slope"
+metric   = "custom.trend.rss_slope_mb_per_h"
+op       = "<="
+target   = 16              # PLACEHOLDER — a true leak shows a persistent positive slope
+workload = "mixed.read_while_write"
+enforce  = false
+
+[[goal]]
+name     = "soak ingest: throughput retention under sustained WAL-on ingest"
+metric   = "custom.trend.throughput_retention"
+op       = ">="
+target   = 0.90            # PLACEHOLDER — ingest decay is the compaction-debt signal (upstream pmcfadin/cqlite#905)
+workload = "write.ingest"
+enforce  = false

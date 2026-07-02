@@ -20,5 +20,9 @@ cqlite **v0.12.0** · no baseline · aarch64 (10 cores)
 | scan throughput regression budget | throughput.rows_per_sec | ≤10% regress | 469,807 | — | — NO-DATA | no |
 | scan throughput regression vs baseline | throughput.rows_per_sec | ≤30% regress | 469,807 | — | — NO-DATA | yes |
 | point lookup p99 regression vs baseline | latency_us.p99 | ≤30% regress | 300,799 | — | — NO-DATA | yes |
+| soak mixed: throughput retention (last/first quartile) | custom.trend.throughput_retention | >= 1 | — | — | — NO-DATA | no |
+| soak mixed: reader p99 drift (last/first quartile) | custom.trend.read_p99_drift_ratio | <= 1 | — | — | — NO-DATA | no |
+| soak mixed: RSS slope | custom.trend.rss_slope_mb_per_h | <= 16 | — | — | — NO-DATA | no |
+| soak ingest: throughput retention under sustained WAL-on ingest | custom.trend.throughput_retention | >= 1 | — | — | — NO-DATA | no |
 
-16 goal(s), 2 failed (0 enforced).
+20 goal(s), 2 failed (0 enforced).
