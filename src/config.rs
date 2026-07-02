@@ -19,6 +19,10 @@ pub struct RunConfig {
     pub cold_cache: bool,
     #[serde(default = "default_seed")]
     pub seed: u64,
+    /// Soak series (issue #31): interval-snapshot cadence, e.g. "60s".
+    /// Absent/"0s" = off.
+    #[serde(default)]
+    pub snapshot_interval: Option<String>,
     #[serde(default)]
     pub suite: Vec<Suite>,
 }

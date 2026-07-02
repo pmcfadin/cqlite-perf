@@ -44,6 +44,7 @@ fn schema() -> TableSchema {
         clustering_keys: vec![],
         columns: vec![col("id"), col("payload")],
         comments: Default::default(),
+        dropped_columns: Default::default(),
     }
 }
 
