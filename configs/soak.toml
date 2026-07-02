@@ -1,0 +1,69 @@
+# Soak profiles (issue #33, epic #30 W3) — DOCUMENTATION ONLY, not a runnable
+# `--config` file. See scripts/run-soak.sh for the actual invocations.
+#
+# Why not a real RunConfig: `RunConfig` (src/config.rs) applies ONE shared
+# warmup/duration/trials/concurrency across every `[[suite]]` workload in the
+# file. `soak.mixed` and `soak.ingest` need genuinely different concurrency
+# (8 vs 4), warmup (2m vs 0), and workload (mixed.read_while_write vs
+# write.ingest) — there is no clean way to express two profiles like that in
+# one shared-fields config. `scripts/run-write-mixed.sh` already established
+# the precedent for this exact situation (write.ingest / write.flush /
+# write.compaction / mixed.* each need different --concurrency/--duration/
+# --warmup): it calls `cqlite-perf run --workload <name> <flags>` directly,
+# once per workload, all appending to the same report dir. `scripts/run-soak.sh`
+# follows that same pattern for the two soak profiles below.
+#
+# This file exists purely so the two profiles' parameters are visible in one
+# place for humans (discoverability) without reading the script. Keep it in
+# sync with scripts/run-soak.sh by hand; there is no parser enforcing it.
+
+[soak.mixed]
+# The #1143-class detector: sustained mixed read/write load, watching whether
+# reader-cohort p99 drifts over hours the way isolated scan throughput does
+# not (cqlite #1143 — same-machine A/B showed reader p99 ~2x worse under
+# concurrent write load, while isolated scan throughput improved 41%).
+workload          = "mixed.read_while_write"
+concurrency       = 8      # 2 writers + 6 readers, per the existing cohort plan (writer_count())
+warmup            = "2m"
+duration          = "2h"   # scripts/run-soak.sh --duration overrides this (and soak.ingest's)
+trials            = 1
+snapshot_interval = "60s"  # -> 120 windows/cohort over 2h
+primary_series    = ["read.p99_us (cohort)", "read.ops_per_sec (cohort)", "resource.peak_rss_bytes"]
+derived_trends    = ["trend.throughput_retention", "trend.read_p99_drift_ratio", "trend.rss_slope_mb_per_h"]
+
+[soak.ingest]
+# The compaction-debt detector: sustained WAL-on ingest, watching for
+# throughput decay (compaction not keeping up with flush output) and RSS
+# growth. Directly generates evidence for upstream pmcfadin/cqlite#905
+# (compaction manager design).
+workload          = "write.ingest"
+concurrency       = 4      # per-worker engines (M2 #2) -> real concurrency scaling
+warmup            = "0"
+duration          = "2h"   # scripts/run-soak.sh --duration overrides this (and soak.mixed's)
+trials            = 1
+snapshot_interval = "60s"
+primary_series    = ["throughput.ops_per_sec", "resource.peak_rss_bytes"]
+derived_trends    = ["trend.throughput_retention", "trend.rss_slope_mb_per_h"]
+# NOTE (as-shipped limitation, see scripts/run-soak.sh header comment):
+# write.ingest (src/workloads/write.rs) only flushes proactively at the
+# memtable threshold; it does not call `maintenance_step()`, so no compaction
+# runs during this profile today. The issue asks for "periodic
+# maintenance_step() cycling (reuse the write.compaction hop)" — that is a
+# workload/runner code change, out of scope for this config+script issue.
+# Tracked as a follow-up; until it lands, soak.ingest measures flush-only
+# ingest decay + RSS, not the compaction-debt scenario cqlite#905 is about.
+# Once W5 (#35) ships SSTable-count/backlog counters, add them to
+# `primary_series` above.
+
+# Disk-volume budget (soak.ingest), computed at implementation time (#33):
+# measured write.ingest throughput at concurrency=4, WAL-on, v0.12.0
+# (reports/2026-06-26-0.1.0/results.jsonl): ~283 ops/sec (rows/sec == ops/sec,
+# 1 row/op). The "basic" schema's on-disk size (lz4, from
+# datasets/manifests/read-basic-S-lz4.json: 5,865,472 bytes / 100,000 rows)
+# is ~58.65 bytes/row. Over a 2h run:
+#   283 rows/s * 7200 s ~= 2.04M rows -> ~2.04M * 58.65 B ~= 120 MB on disk
+# Even padded 5x for WAL overhead + per-worker directory duplication that is
+# ~600 MB — comfortably inside a GH-hosted runner's ~14 GB free budget. A 4h+
+# authoritative run doubles that to ~240 MB (~1.2 GB padded). No rate cap or
+# bounded key-space overwrite mode is needed at current throughput; recompute
+# before extending past ~4h or after a throughput-improving engine change.
