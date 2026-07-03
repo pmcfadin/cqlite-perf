@@ -235,17 +235,20 @@ jobs:
       # target/ across the branch switch here would carry incremental-
       # compilation state between two different source trees, same caution
       # the upstream engine's perf-regression.yml documents for its own
-      # PR-vs-main pattern). The corpus DATA is not regenerated for the master
-      # build — it's symlinked from the main checkout so both measurements run
-      # against byte-identical bytes.
+      # PR-vs-main pattern). The corpus DATA is COPIED (not symlinked) into
+      # the worktree — a symlink reproduced cleanly in local testing but hit
+      # an unreproducible checksum mismatch on the actual GitHub runner (an
+      # earlier version of this step used `ln -s`; see git history on this
+      # comment block). The S-tier corpora are small (a few MB each,
+      # comfortably cheap to duplicate for a PR job), and a real copy removes
+      # an entire class of shared-state ambiguity between two builds reading
+      # the same underlying files — worth the small disk/time cost for a gate
+      # this workflow depends on being trustworthy.
       #
       # `datasets/manifests/*.json` is git-tracked (see .gitignore), so the
-      # worktree checkout ALREADY materializes a real `datasets/manifests/`
-      # dir — a single `ln -s ... datasets` would land INSIDE that existing
-      # directory (GNU ln's directory-target behavior) rather than replacing
-      # it, leaving the actual corpus data (the gitignored `read-*-S-*/`
-      # subdirs) invisible. Symlink each corpus subdir individually instead,
-      # leaving the git-checked-out `manifests/` alone.
+      # worktree checkout already has a correct, real `datasets/manifests/`
+      # dir from the git commit being measured — only the gitignored corpus
+      # data subdirs need copying in.
       - name: Build + smoke master (same runner, PR only)
         if: github.event_name == 'pull_request'
         run: |
@@ -255,7 +258,7 @@ jobs:
           for d in "$GITHUB_WORKSPACE"/datasets/*/; do
             name=$(basename "$d")
             [[ "$name" == "manifests" ]] && continue
-            ln -s "$d" "/tmp/master-checkout/datasets/$name"
+            cp -r "$d" "/tmp/master-checkout/datasets/$name"
           done
           (
             cd /tmp/master-checkout
