@@ -235,60 +235,74 @@ jobs:
       # target/ across the branch switch here would carry incremental-
       # compilation state between two different source trees, same caution
       # the upstream engine's perf-regression.yml documents for its own
-      # PR-vs-main pattern). The corpus DATA is COPIED (not symlinked) into
-      # the worktree — a symlink reproduced cleanly in local testing but hit
-      # an unreproducible checksum mismatch on the actual GitHub runner (an
-      # earlier version of this step used `ln -s`; see git history on this
-      # comment block). The S-tier corpora are small (a few MB each,
-      # comfortably cheap to duplicate for a PR job), and a real copy removes
-      # an entire class of shared-state ambiguity between two builds reading
-      # the same underlying files — worth the small disk/time cost for a gate
-      # this workflow depends on being trustworthy.
+      # PR-vs-main pattern).
       #
-      # `datasets/manifests/*.json` is git-tracked (see .gitignore), so the
-      # worktree checkout already has a correct, real `datasets/manifests/`
-      # dir from the git commit being measured — only the gitignored corpus
-      # data subdirs need copying in.
-      - name: Build + smoke master (same runner, PR only)
+      # The corpus is a genuinely INDEPENDENT, FRESH cache restore into the
+      # worktree — not a copy/symlink of the corpus the PR's own smoke just
+      # read moments earlier. Debugging this fix (see PR #46 history) found
+      # that reusing the PR's already-read corpus (via `ln -s` or `cp -r`,
+      # both tried) produced a real, deterministic checksum mismatch on the
+      # actual GitHub runner: `datasets --check` reported the corpus as
+      # matching its manifest immediately before the PR's own smoke ran, but
+      # by the time the master step read the SAME bytes moments later, their
+      # SHA256 had changed — reproducible on the runner, but never on macOS
+      # locally. Root cause wasn't conclusively isolated within a reasonable
+      # debugging budget (candidates: something in the read path touching
+      # the corpus files, or the actions/cache-restored filesystem behaving
+      # differently under repeated access). Rather than depend on an
+      # unexplained invariant ("reading a corpus twice in one job is safe"),
+      # the master build gets its own pristine corpus via the SAME
+      # cache-first-then-generate mechanism the other jobs use, fully
+      # decoupled from anything the PR's own smoke touched.
+      - name: Fetch + worktree add master (PR only)
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           git fetch origin master --depth=1
           git worktree add /tmp/master-checkout FETCH_HEAD
-          for d in "$GITHUB_WORKSPACE"/datasets/*/; do
-            name=$(basename "$d")
-            [[ "$name" == "manifests" ]] && continue
-            cp -r "$d" "/tmp/master-checkout/datasets/$name"
-          done
-          # TEMPORARY diagnostics (issue #39 follow-up): the copy is failing a
-          # checksum check on the actual runner that never reproduces locally.
-          # Compare file listing + hash directly so the next run gives a
-          # concrete answer instead of another guess. Remove once root-caused.
-          echo "::group::diagnostic: source vs copied read-basic-S-lz4"
-          echo "--- source find (sorted) ---"
-          find "$GITHUB_WORKSPACE/datasets/read-basic-S-lz4" -type f | sort
-          echo "--- copy find (sorted) ---"
-          find /tmp/master-checkout/datasets/read-basic-S-lz4 -type f | sort
-          echo "--- source sha256sum of *-Data.db (sorted) ---"
-          find "$GITHUB_WORKSPACE/datasets/read-basic-S-lz4" -name '*-Data.db' | sort | xargs -r sha256sum
-          echo "--- copy sha256sum of *-Data.db (sorted) ---"
-          find /tmp/master-checkout/datasets/read-basic-S-lz4 -name '*-Data.db' | sort | xargs -r sha256sum
-          echo "::endgroup::"
-          (
-            cd /tmp/master-checkout
-            cargo build --release
-            echo "::group::diagnostic: datasets --check from the worktree, post-build"
-            ./target/release/cqlite-perf datasets --check || true
-            echo "::endgroup::"
-            mkdir -p reports/master-same-runner
-            ./target/release/cqlite-perf run \
-              --workload read.full_scan --duration 10s --warmup 5s --trials 1 \
-              --out reports/master-same-runner
-            ./target/release/cqlite-perf run \
-              --workload read.point_lookup --duration 10s --warmup 5s --trials 1 \
-              --out reports/master-same-runner
-          )
-          cp -r /tmp/master-checkout/reports/master-same-runner "$GITHUB_WORKSPACE/reports/"
+          mkdir -p /tmp/master-checkout/datasets
+
+      - name: Restore corpus cache (master worktree, PR only)
+        if: github.event_name == 'pull_request'
+        id: master-corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/master-checkout/datasets/
+          key: corpus-${{ runner.os }}-${{ hashFiles('datasets/manifests/**') }}
+
+      - name: Generate corpora for master worktree (cache miss only, PR only)
+        if: github.event_name == 'pull_request' && steps.master-corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp/master-checkout
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema basic
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
+
+      - name: Build master (same runner, PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          cd /tmp/master-checkout
+          cargo build --release
+
+      - name: Verify master worktree's corpus SHA256 (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          cd /tmp/master-checkout
+          ./target/release/cqlite-perf datasets --check
+
+      - name: Smoke master (same runner, PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          cd /tmp/master-checkout
+          mkdir -p reports/master-same-runner
+          ./target/release/cqlite-perf run \
+            --workload read.full_scan --duration 10s --warmup 5s --trials 1 \
+            --out reports/master-same-runner
+          ./target/release/cqlite-perf run \
+            --workload read.point_lookup --duration 10s --warmup 5s --trials 1 \
+            --out reports/master-same-runner
+          cp -r reports/master-same-runner "$GITHUB_WORKSPACE/reports/"
 
       # ── Regression gate (enforced, same-runner PR-vs-master) ──────────────────
       # Uses scorecard --enforce to fail the job if any enforced goal regresses
