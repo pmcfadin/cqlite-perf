@@ -26,11 +26,25 @@
 #   Perf jobs do NOT run if it fails.
 #
 # Linux baseline:
-#   A short `read.full_scan` run (10 s + 5 s warmup, 1 trial) records a real
-#   Linux throughput number on the ubuntu-latest runner (bare GitHub-hosted x86-64
-#   — not virtualized Docker-on-macOS). Results are uploaded as a build artifact
-#   labeled `linux-baseline` and kept for 90 days. A compare step diffs against
-#   the previous baseline artifact when one is present.
+#   A short `read.full_scan` + `read.point_lookup` run (10 s + 5 s warmup, 1
+#   trial) records a real Linux throughput/latency number on the ubuntu-latest
+#   runner (bare GitHub-hosted x86-64 — not virtualized Docker-on-macOS).
+#   Results are uploaded as a build artifact labeled `linux-baseline-master`
+#   (on master pushes) and kept for 90 days.
+#
+# Regression gate (issue #39 fix — SAME-RUNNER comparison):
+#   On PRs, the enforced regression gate re-measures `master` in the SAME job,
+#   on the SAME runner (via a git worktree), immediately after measuring the
+#   PR. This mirrors the upstream engine's own perf-regression.yml pattern
+#   (PR-vs-main, same runner) and is machine-invariant by construction.
+#   The PREVIOUS design compared the PR's runner against a `linux-baseline-
+#   master` artifact recorded on a DIFFERENT runner from a prior push — on
+#   GitHub's heterogeneous fleet this produced spurious ~50-60% "regressions"
+#   from pure hardware variance (cqlite-perf#39, hit PRs #38 and #45, both
+#   docs/scripts-only changes with zero possible perf impact). The download-
+#   artifact comparison is kept below, but demoted to INFORMATIONAL ONLY
+#   (never gates) — it's useful trend context but spans host signatures,
+#   which TEST_PLAN.md Reference C says never to gate on.
 
 name: CI
 
@@ -207,11 +221,130 @@ jobs:
             --trials 1 \
             --out reports/linux-baseline
 
-      # ── Download prior baseline for comparison ────────────────────────────────
-      # actions/download-artifact@v4 only retrieves artifacts from the CURRENT run;
-      # linux-baseline-master is produced by master-push runs (different runs).
-      # Use the gh CLI (preinstalled on ubuntu-latest) to fetch the artifact from
-      # the latest SUCCESSFUL master CI run other than the current one.
+      # ── Same-runner master build + smoke (PR only) — THE regression gate ─────
+      # Builds and measures `origin/master` in a separate git worktree, on this
+      # SAME runner, right after measuring the PR above. This is what makes the
+      # comparison machine-invariant (issue #39): both numbers come from
+      # identical hardware in the same job, not from two different runners
+      # picked from GitHub's heterogeneous fleet on two different days.
+      #
+      # The worktree shares this job's already-warm ~/.cargo/registry (global,
+      # unaffected by cwd) so master's build only redoes compilation, not
+      # dependency fetch. Its own target/ is NOT cached (deliberately — the
+      # cache above is for the PR's own build in the main checkout; caching
+      # target/ across the branch switch here would carry incremental-
+      # compilation state between two different source trees, same caution
+      # the upstream engine's perf-regression.yml documents for its own
+      # PR-vs-main pattern).
+      #
+      # The corpus is a genuinely INDEPENDENT, FRESH cache restore into the
+      # worktree — not a copy/symlink of the corpus the PR's own smoke just
+      # read moments earlier. Debugging this fix (see PR #46 history) found
+      # that reusing the PR's already-read corpus (via `ln -s` or `cp -r`,
+      # both tried) produced a real, deterministic checksum mismatch on the
+      # actual GitHub runner: `datasets --check` reported the corpus as
+      # matching its manifest immediately before the PR's own smoke ran, but
+      # by the time the master step read the SAME bytes moments later, their
+      # SHA256 had changed — reproducible on the runner, but never on macOS
+      # locally. Root cause wasn't conclusively isolated within a reasonable
+      # debugging budget (candidates: something in the read path touching
+      # the corpus files, or the actions/cache-restored filesystem behaving
+      # differently under repeated access). Rather than depend on an
+      # unexplained invariant ("reading a corpus twice in one job is safe"),
+      # the master build gets its own pristine corpus via the SAME
+      # cache-first-then-generate mechanism the other jobs use, fully
+      # decoupled from anything the PR's own smoke touched.
+      - name: Fetch + worktree add master (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git fetch origin master --depth=1
+          git worktree add /tmp/master-checkout FETCH_HEAD
+          mkdir -p /tmp/master-checkout/datasets
+
+      - name: Restore corpus cache (master worktree, PR only)
+        if: github.event_name == 'pull_request'
+        id: master-corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/master-checkout/datasets/
+          key: corpus-${{ runner.os }}-${{ hashFiles('datasets/manifests/**') }}
+
+      - name: Generate corpora for master worktree (cache miss only, PR only)
+        if: github.event_name == 'pull_request' && steps.master-corpus-cache.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp/master-checkout
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema basic
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema wide_rows
+          bash scripts/gen-corpus.sh --tier S --codec lz4 --schema collections
+
+      - name: Build master (same runner, PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          cd /tmp/master-checkout
+          cargo build --release
+
+      - name: Verify master worktree's corpus SHA256 (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          cd /tmp/master-checkout
+          ./target/release/cqlite-perf datasets --check
+
+      - name: Smoke master (same runner, PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          cd /tmp/master-checkout
+          mkdir -p reports/master-same-runner
+          ./target/release/cqlite-perf run \
+            --workload read.full_scan --duration 10s --warmup 5s --trials 1 \
+            --out reports/master-same-runner
+          ./target/release/cqlite-perf run \
+            --workload read.point_lookup --duration 10s --warmup 5s --trials 1 \
+            --out reports/master-same-runner
+          cp -r reports/master-same-runner "$GITHUB_WORKSPACE/reports/"
+
+      # ── Regression gate (enforced, same-runner PR-vs-master) ──────────────────
+      # Uses scorecard --enforce to fail the job if any enforced goal regresses
+      # beyond its budget, judged against master measured on THIS SAME runner
+      # (the step above) — not a cross-run artifact. Both smoke workloads
+      # append to the same timestamped results.jsonl (tail -1 finds it).
+      #
+      # A missing/empty results.jsonl here means the master build step above
+      # is broken (it always runs in this same job on pull_request events, so
+      # there is no legitimate "no data yet" case the way a cross-run artifact
+      # could be absent) — fail LOUDLY rather than silently skip, so a
+      # regression in the gate itself can't hide behind a green check the way
+      # the "ln -s onto an existing directory" bug did during #39's fix.
+      - name: Regression gate (scorecard --enforce vs master, same runner)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          CURRENT=$(find reports/linux-baseline -name 'results.jsonl' | sort | tail -1)
+          BASELINE=$(find reports/master-same-runner -name 'results.jsonl' | sort | tail -1)
+          if [[ -z "$CURRENT" || -z "$BASELINE" ]]; then
+            echo "::error::results.jsonl missing (current='$CURRENT' baseline='$BASELINE') — the master build/smoke step is broken, not a legitimate no-data case."
+            exit 1
+          fi
+          if [[ $(wc -l < "$CURRENT") -eq 0 || $(wc -l < "$BASELINE") -eq 0 ]]; then
+            echo "::error::results.jsonl exists but is empty (current has $(wc -l < "$CURRENT") lines, baseline has $(wc -l < "$BASELINE")) — every smoke workload errored out; check the 'Build + smoke master' and 'Run perf smoke' step logs."
+            exit 1
+          fi
+          echo "Regression gate: current(PR)=$CURRENT  baseline(master, same runner)=$BASELINE"
+          # --out is omitted: scorecard writes SCORECARD.md next to --results by default.
+          ./target/release/cqlite-perf scorecard \
+            --enforce \
+            --baseline "$BASELINE" \
+            --results "$CURRENT" \
+            --goals goals.toml
+
+      # ── Download prior baseline (INFORMATIONAL ONLY — does not gate) ─────────
+      # This artifact was recorded on a DIFFERENT runner on a prior push, so per
+      # TEST_PLAN.md Reference C ("never compare across host signatures") it is
+      # never used to gate anything (see the regression gate above, which uses
+      # the same-runner master build instead). Kept purely for trend visibility
+      # in the job log — how does this PR's number compare to the historical
+      # absolute baseline, informationally.
       - name: Download previous Linux baseline (latest master run)
         id: prev-baseline
         env:
@@ -276,32 +409,6 @@ jobs:
           "
           fi
 
-      # ── Regression gate (enforced) ────────────────────────────────────────────
-      # Uses scorecard --enforce to fail the job if any enforced goal regresses
-      # beyond its budget. Both smoke workloads (read.full_scan and
-      # read.point_lookup) append to the SAME timestamped results.jsonl under
-      # reports/linux-baseline/ (same date + harness version → same subdir), so
-      # the tail -1 file already contains both results. The prior baseline's
-      # equivalent file is located the same way under reports/prior-linux-baseline/.
-      # When no prior artifact exists (first run), regression_max_pct goals yield
-      # Status::NoData → not a failure; the step is a no-op on first run.
-      - name: Regression gate (scorecard --enforce vs prior baseline)
-        if: steps.prev-baseline.outputs.found == 'true'
-        run: |
-          CURRENT=$(find reports/linux-baseline -name 'results.jsonl' | sort | tail -1)
-          PRIOR=$(find reports/prior-linux-baseline -name 'results.jsonl' | sort | tail -1)
-          if [[ -z "$CURRENT" || -z "$PRIOR" ]]; then
-            echo "No results.jsonl found; skipping regression gate."
-            exit 0
-          fi
-          echo "Regression gate: current=$CURRENT  prior=$PRIOR"
-          # --out is omitted: scorecard writes SCORECARD.md next to --results by default.
-          ./target/release/cqlite-perf scorecard \
-            --enforce \
-            --baseline "$PRIOR" \
-            --results "$CURRENT" \
-            --goals goals.toml
-
       # ── Upload baseline artifact ──────────────────────────────────────────────
       # On master pushes, upload as the "authoritative" baseline (name: linux-baseline-master).
       # On PRs, upload with the PR number so comparisons are unambiguous.
@@ -318,5 +425,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-baseline-pr-${{ github.event.number }}
-          path: reports/linux-baseline/
+          # Both dirs included so a red regression gate is debuggable from the
+          # artifact alone: the PR's own numbers AND the same-runner master
+          # numbers it was actually judged against.
+          path: |
+            reports/linux-baseline/
+            reports/master-same-runner/
           retention-days: 30

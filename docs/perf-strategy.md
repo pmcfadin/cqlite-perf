@@ -85,9 +85,14 @@ micro-bench that would have caught it earlier, when one is expressible.
 `ci.yml` on every harness PR and master push (which is how engine bumps land):
 content-addressed corpus provisioning → `datasets --check` → **`cqlite-perf
 validate`** (Reference B row counts, hard gate) → read smoke → `scorecard
---enforce` against the prior `linux-baseline-master` artifact with
-baseline-relative goals (30% budget on `read.full_scan` throughput and
-`read.point_lookup` p99).
+--enforce` with baseline-relative goals (30% budget on `read.full_scan`
+throughput and `read.point_lookup` p99). On PRs, the baseline is `master`
+re-measured in a git worktree **on the same runner, same job** (issue #39) —
+principle 5 in action: cross-runner comparison on GitHub's heterogeneous
+fleet produced spurious ~50–60% "regressions" from pure hardware variance,
+so the enforced comparison had to become machine-invariant. The
+`linux-baseline-master` artifact from prior master pushes is kept only as
+informational trend context, never gated on.
 
 ### T2 — main-tracking (exists)
 
