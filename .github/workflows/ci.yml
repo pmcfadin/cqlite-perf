@@ -260,9 +260,26 @@ jobs:
             [[ "$name" == "manifests" ]] && continue
             cp -r "$d" "/tmp/master-checkout/datasets/$name"
           done
+          # TEMPORARY diagnostics (issue #39 follow-up): the copy is failing a
+          # checksum check on the actual runner that never reproduces locally.
+          # Compare file listing + hash directly so the next run gives a
+          # concrete answer instead of another guess. Remove once root-caused.
+          echo "::group::diagnostic: source vs copied read-basic-S-lz4"
+          echo "--- source find (sorted) ---"
+          find "$GITHUB_WORKSPACE/datasets/read-basic-S-lz4" -type f | sort
+          echo "--- copy find (sorted) ---"
+          find /tmp/master-checkout/datasets/read-basic-S-lz4 -type f | sort
+          echo "--- source sha256sum of *-Data.db (sorted) ---"
+          find "$GITHUB_WORKSPACE/datasets/read-basic-S-lz4" -name '*-Data.db' | sort | xargs -r sha256sum
+          echo "--- copy sha256sum of *-Data.db (sorted) ---"
+          find /tmp/master-checkout/datasets/read-basic-S-lz4 -name '*-Data.db' | sort | xargs -r sha256sum
+          echo "::endgroup::"
           (
             cd /tmp/master-checkout
             cargo build --release
+            echo "::group::diagnostic: datasets --check from the worktree, post-build"
+            ./target/release/cqlite-perf datasets --check || true
+            echo "::endgroup::"
             mkdir -p reports/master-same-runner
             ./target/release/cqlite-perf run \
               --workload read.full_scan --duration 10s --warmup 5s --trials 1 \
